@@ -13,6 +13,7 @@ This is a client for power management of the aiov2.
 **Features:**  GPS, LORA, SDR, USB
 
 **Examples:**
+
 Turn ON GPS
   
 `python aiov2_ctl.py GPS on` 
