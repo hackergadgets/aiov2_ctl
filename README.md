@@ -1,5 +1,6 @@
 # aiov2_ctl
-This is a client for control the aiov2.
+This is a client for power management of the aiov2.
+
 ## Usage:
 **View all feature status**
   `python aiov2_ctl.py` 
@@ -16,5 +17,6 @@ This is a client for control the aiov2.
 **Examples:**
 Turn ON GPS
   `python aiov2_ctl.py GPS on` 
+  
 Turn OFF LoRa
   `python aiov2_ctl.py LORA off`
