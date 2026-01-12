@@ -2,6 +2,12 @@
 This is a client for power management of the aiov2.
 
 ## Usage:
+**Prepration**
+
+Intatll the package for GUI mode.
+
+`sudo apt install python3-pyqt6`
+
 **View all feature status**
 
 `python aiov2_ctl.py` 
