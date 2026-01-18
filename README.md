@@ -124,12 +124,13 @@ nano ~/.config/autostart/aiov2_ctl.desktop
 Paste:
 
 ```
-[Desktop Entry]  
+[Desktop Entry]
 Type=Application
 Name=AIO v2 Controller
-Comment=AIO v2 tray controller
-Exec=python3 /opt/aiov2_ctl/aiov2_ctl.py --gui
+Comment=GPIO tray controller
+Exec=/usr/bin/python3 /opt/aiov2_ctl/aiov2_ctl.py --gui
 Terminal=false
+XDG_AUTOSTART_DELAY=5
 ```
 
 Save and reboot.
