@@ -165,6 +165,12 @@ def show_detailed():
 # GUI (Tray + Status Window)
 # ==============================
 def run_gui():
+    # Prevent running GUI as root (tray icons will not appear under Wayland/X11)
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        print("Error: Do not run the GUI as root. Run 'aiov2_ctl --gui' as your normal user.")
+        sys.exit(1)
+
+
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         print("No display available")
         sys.exit(1)
@@ -177,10 +183,14 @@ def run_gui():
         QVBoxLayout,
         QLabel,
     )
+    from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QIcon, QAction, QCursor
     from PyQt6.QtCore import QTimer
 
     app = QApplication(sys.argv)
+    # Ensure a window icon is set at the application level (helps tray visibility)
+    app.setQuitOnLastWindowClosed(False)
+
     app.setQuitOnLastWindowClosed(False)
 
     icon = QIcon.fromTheme("drive-removable-media")
@@ -191,7 +201,19 @@ def run_gui():
     if icon.isNull():
         icon = QIcon("/usr/share/icons/hicolor/48x48/apps/utilities-terminal.png")
 
-    tray = QSystemTrayIcon(icon)
+    tray = QSystemTrayIcon()
+    tray.setIcon(icon)
+    tray.setToolTip("AIO v2 Controller")
+
+    # Wayland-friendly dummy widget to anchor tray/menu (fixes manual launch)
+    dummy = QWidget()
+    dummy.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
+    dummy.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    dummy.setWindowOpacity(0)
+    dummy.resize(1, 1)
+
+    tray.setVisible(True)
+
     menu = QMenu()
     actions = {}
 
@@ -217,22 +239,33 @@ def run_gui():
     # Status window (left click)
     window = QWidget()
     window.setWindowTitle("AIO v2 Status")
+    window.setWindowFlags(Qt.WindowType.Tool)
     layout = QVBoxLayout(window)
-    status_label = QLabel()
-    layout.addWidget(status_label)
+
+    power_label = QLabel("Overall Power: -- W")
+    layout.addWidget(power_label)
+
+    toggle_actions = {}
+    for f, p in GPIO_MAP.items():
+        chk = QAction(f, window)
+        chk.setCheckable(True)
+        chk.triggered.connect(lambda c, f=f: GpioController.set_gpio(GPIO_MAP[f], c))
+        btn = QLabel()
+        layout.addWidget(btn)
+        toggle_actions[f] = btn
 
     def refresh_window():
-        lines = []
         pw = Telemetry.usb_power()
-        lines.append(f"Overall Power: {pw if pw is not None else 'n/a'} W")
-        lines.append("")
+        power_label.setText(f"Overall Power: {pw if pw is not None else 'n/a'} W")
         for f, p in GPIO_MAP.items():
-            state = "ON" if GpioController.get_gpio(p) else "OFF"
-            lines.append(f"{f}: {state}")
-        status_label.setText("\n".join(lines))
+            state = GpioController.get_gpio(p)
+            toggle_actions[f].setText(f"{f}: {'ON' if state else 'OFF'}")
 
     def on_activate(reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            dummy.move(QCursor.pos())
+            dummy.show()
+            dummy.activateWindow()
             refresh_window()
             window.show()
             window.raise_()
