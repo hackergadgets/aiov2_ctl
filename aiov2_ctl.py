@@ -190,10 +190,23 @@ def show_power_live():
 def show_watch():
     try:
         while True:
-            states = [f"{f}:{'ON' if GpioController.get_gpio(p) else 'OFF'}" for f, p in GPIO_MAP.items()]
+            states = [
+                f"{f}:{'ON' if GpioController.get_gpio(p) else 'OFF'}"
+                for f, p in GPIO_MAP.items()
+            ]
+
             viw = Telemetry.battery_v_i_w()
-            pwr = viw["power"] if viw else "n/a"
-            print("  ".join(states) + f"  Power:{pwr}W", end="\r", flush=True)
+            pwr = f"{viw['power']:.2f}W" if viw else "n/a"
+
+            src = "AC" if Telemetry.ac_online() else "BAT"
+            batt = Telemetry.battery_status() or "n/a"
+
+            print(
+                "  ".join(states)
+                + f"  Src:{src}  Batt:{batt}  Power:{pwr}",
+                end="\r",
+                flush=True,
+            )
             time.sleep(1)
     except KeyboardInterrupt:
         pass
