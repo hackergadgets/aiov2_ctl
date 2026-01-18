@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 import json
+from statistics import mean, pstdev
 
 # ==============================
 # Configuration
@@ -22,6 +23,10 @@ FEATURE_META = {
     "USB":  {"type": "usb"},
 }
 
+# uConsole reality
+BATTERY_SUPPLY = "axp20x-battery"
+AC_SUPPLY = "axp22x-ac"
+
 # ==============================
 # GPIO Helpers
 # ==============================
@@ -36,11 +41,7 @@ class GpioController:
     @staticmethod
     def set_gpio(pin, state):
         subprocess.call([
-            "pinctrl",
-            "set",
-            str(pin),
-            "op",
-            "dh" if state else "dl",
+            "pinctrl", "set", str(pin), "op", "dh" if state else "dl"
         ])
 
     @staticmethod
@@ -53,263 +54,205 @@ class GpioController:
 # ==============================
 class Telemetry:
     @staticmethod
-    def gpsd_devices():
+    def _read_int(path):
         try:
-            out = subprocess.check_output(["gpspipe", "-r"], text=True, timeout=1)
-            for line in out.splitlines():
-                if '"class":"DEVICES"' in line:
-                    return json.loads(line)
+            with open(path) as f:
+                return int(f.read().strip())
         except Exception:
-            pass
+            return None
+
+    @staticmethod
+    def ac_online():
+        v = Telemetry._read_int(f"/sys/class/power_supply/{AC_SUPPLY}/online")
+        return bool(v) if v is not None else None
+
+    @staticmethod
+    def battery_status():
+        try:
+            with open(f"/sys/class/power_supply/{BATTERY_SUPPLY}/status") as f:
+                return f.read().strip()
+        except Exception:
+            return None
+
+    @staticmethod
+    def battery_v_i_w():
+        v_uv = Telemetry._read_int(f"/sys/class/power_supply/{BATTERY_SUPPLY}/voltage_now")
+        i_ua = Telemetry._read_int(f"/sys/class/power_supply/{BATTERY_SUPPLY}/current_now")
+        if v_uv is None or i_ua is None:
+            return None
+
+        v = v_uv / 1e6
+        i = i_ua / 1e6
+        w = abs(v * i)
+
+        return {
+            "voltage": round(v, 2),
+            "current": round(i, 2),
+            "power": round(w, 2),
+        }
+
+# ==============================
+# Sampling / Measurement
+# ==============================
+def sample_battery_power(seconds=3.0, interval=0.2):
+    currents, powers = [], []
+    voltage = None
+
+    end = time.time() + max(0.1, seconds)
+    while time.time() < end:
+        viw = Telemetry.battery_v_i_w()
+        if viw:
+            voltage = viw["voltage"]
+            currents.append(viw["current"])
+            powers.append(viw["power"])
+        time.sleep(max(0.05, interval))
+
+    if not currents:
         return None
 
-    @staticmethod
-    def gps_status():
-        devices = Telemetry.gpsd_devices()
-        if not devices or not devices.get("devices"):
-            return {"state": "no-device"}
+    return {
+        "voltage": voltage,
+        "current_mean": round(mean(currents), 2),
+        "current_sd": round(pstdev(currents), 2) if len(currents) > 1 else 0.0,
+        "power_mean": round(mean(powers), 2),
+        "power_sd": round(pstdev(powers), 2) if len(powers) > 1 else 0.0,
+        "samples": len(currents),
+    }
 
-        status = {"state": "active", "tpv": None, "sky": None}
-        try:
-            proc = subprocess.Popen(
-                ["gpspipe", "-w"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-            start = time.time()
-            while time.time() - start < 1.0:
-                line = proc.stdout.readline()
-                if not line:
-                    break
-                if '"class":"TPV"' in line:
-                    status["tpv"] = json.loads(line)
-                elif '"class":"SKY"' in line:
-                    status["sky"] = json.loads(line)
-                if status["tpv"] or status["sky"]:
-                    break
-            proc.terminate()
-        except Exception:
-            pass
-        return status
+def measure_feature(feature, sample_seconds=3.0, settle_seconds=1.0, interval=0.2):
+    feature = feature.upper()
+    if feature not in GPIO_MAP:
+        print(f"Unknown feature '{feature}'")
+        return 2
 
-    @staticmethod
-    def power_rails():
-        """
-        Returns per-rail power data from /sys/class/power_supply
-        Units:
-          voltage: V
-          current: A
-          power:   W
-        """
-        base = "/sys/class/power_supply"
-        rails = {}
+    pin = GPIO_MAP[feature]
+    orig = GpioController.get_gpio(pin)
 
-        if not os.path.isdir(base):
-            return rails
+    ac = Telemetry.ac_online()
+    batt_status = Telemetry.battery_status()
 
-        for dev in os.listdir(base):
-            path = os.path.join(base, dev)
-            try:
-                with open(os.path.join(path, "voltage_now")) as f:
-                    volt = int(f.read()) / 1e6
-                with open(os.path.join(path, "current_now")) as f:
-                    cur = int(f.read()) / 1e6
+    print(f"Measure: {feature} (GPIO{pin})")
+    print(f"Power source: {'AC online' if ac else 'AC offline/unknown'} | Battery status: {batt_status or 'n/a'}")
+    print(f"Current state: {'ON' if orig else 'OFF'}")
 
-                power = round(abs(volt * cur), 2)
+    if orig:
+        print("Sampling ON state...")
+        on = sample_battery_power(sample_seconds, interval)
+        print(f"Disabling {feature}...")
+        GpioController.set_gpio(pin, False)
+        time.sleep(settle_seconds)
+        print("Sampling OFF state...")
+        off = sample_battery_power(sample_seconds, interval)
+        print(f"Restoring {feature} to ON...")
+        GpioController.set_gpio(pin, True)
+    else:
+        print("Sampling OFF state...")
+        off = sample_battery_power(sample_seconds, interval)
+        print(f"Enabling {feature}...")
+        GpioController.set_gpio(pin, True)
+        time.sleep(settle_seconds)
+        print("Sampling ON state...")
+        on = sample_battery_power(sample_seconds, interval)
+        print(f"Restoring {feature} to OFF...")
+        GpioController.set_gpio(pin, False)
 
-                rails[dev] = {
-                    "voltage": round(volt, 2),
-                    "current": round(cur, 2),
-                    "power": power,
-                }
-            except Exception:
-                continue
+    if not on or not off:
+        print("Error: telemetry sampling failed.")
+        return 1
 
-        return rails
+    d_cur = round(on["current_mean"] - off["current_mean"], 2)
+    d_pwr = round(on["power_mean"] - off["power_mean"], 2)
 
-    @staticmethod
-    def total_power():
-        rails = Telemetry.power_rails()
-        return round(sum(r["power"] for r in rails.values()), 2) if rails else None
+    print("\nResults (battery net draw)")
+    print("--------------------------")
+    print(f"OFF: {off['voltage']:.2f} V  {off['current_mean']:.2f} A  ({off['power_mean']:.2f} W)  ±{off['power_sd']:.2f}W")
+    print(f"ON : {on['voltage']:.2f} V  {on['current_mean']:.2f} A  ({on['power_mean']:.2f} W)  ±{on['power_sd']:.2f}W")
+    print("--------------------------")
+    sign = "+" if d_pwr >= 0 else "-"
+    print(f"Δ   {sign}{abs(d_cur):.2f} A   ({sign}{abs(d_pwr):.2f} W)")
 
-    @staticmethod
-    def io_users(path):
-        try:
-            out = subprocess.check_output(["lsof", path], text=True)
-            return list({line.split()[0] for line in out.splitlines()[1:]})
-        except Exception:
-            return []
+    return 0
 
 # ==============================
-# Status Assembly
-# ==============================
-def feature_status(name, pin):
-    on = GpioController.get_gpio(pin)
-    info = {"enabled": on, "gpio": pin}
-
-    if name == "GPS" and on:
-        info["gps"] = Telemetry.gps_status()
-        dev = FEATURE_META["GPS"].get("device")
-        info["device"] = dev
-        info["users"] = Telemetry.io_users(dev)
-
-    return info
-
-# ==============================
-# CLI Output
-# ==============================
-def show_basic():
-    print("Feature Status")
-    print("====================")
-    for f, p in GPIO_MAP.items():
-        state = "ON" if GpioController.get_gpio(p) else "OFF"
-        print(f"{f:<5} GPIO{p}: {state}")
-
-def show_detailed():
-    print("Detailed Feature Status")
-    print("========================")
-
-    total = Telemetry.total_power()
-    print(f"Overall Power: {total if total is not None else 'n/a'} W")
-    print("------------------------")
-
-    for f, p in GPIO_MAP.items():
-        data = feature_status(f, p)
-        print(f"{f} (GPIO{p})")
-        for k, v in data.items():
-            print(f"  {k}: {v}")
-        print()
-
-# ==============================
-# Live Power Mode (Per-rail)
+# Live / Status
 # ==============================
 def show_power_live():
     try:
         while True:
-            rails = Telemetry.power_rails()
-            os.system("clear")
+            viw = Telemetry.battery_v_i_w()
+            ac = Telemetry.ac_online()
+            batt = Telemetry.battery_status()
 
+            os.system("clear")
             print("Power Monitor (Ctrl+C to quit)")
             print("-----------------------------")
+            print(f"Source: {'AC online' if ac else 'AC offline'} | Battery: {batt or 'n/a'}")
 
-            total = 0.0
-            for name, r in rails.items():
-                print(
-                    f"{name:<14} "
-                    f"{r['voltage']:>5.2f} V  "
-                    f"{r['current']:>5.2f} A  "
-                    f"({r['power']:>5.2f} W)"
-                )
-                total += r["power"]
+            if viw:
+                print(f"{viw['voltage']:.2f} V  {viw['current']:.2f} A  ({viw['power']:.2f} W)")
+            else:
+                print("Telemetry unavailable")
 
-            print("-----------------------------")
-            print(f"Total: {total:.2f} W")
             time.sleep(1)
-
     except KeyboardInterrupt:
         print("\nExiting power monitor.")
 
-# ==============================
-# Watch Mode (Compact)
-# ==============================
 def show_watch():
-    print("Live Status (Ctrl+C to quit)")
-    print("----------------------------")
     try:
         while True:
-            states = [
-                f"{f}:{'ON' if GpioController.get_gpio(p) else 'OFF'}"
-                for f, p in GPIO_MAP.items()
-            ]
-            total = Telemetry.total_power()
-            line = "  ".join(states)
-            line += f"  Power:{total if total is not None else 'n/a'}W"
-            print(line, end="\r", flush=True)
+            states = [f"{f}:{'ON' if GpioController.get_gpio(p) else 'OFF'}" for f, p in GPIO_MAP.items()]
+            viw = Telemetry.battery_v_i_w()
+            ac = Telemetry.ac_online()
+            batt = Telemetry.battery_status()
+            power = viw["power"] if viw else "n/a"
+
+            print(
+                "  ".join(states)
+                + f"  Src:{'AC' if ac else 'BAT'} Batt:{batt or 'n/a'} Power:{power}W",
+                end="\r",
+                flush=True,
+            )
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nExiting watch mode.")
-
-# ==============================
-# GUI (Tray)
-# ==============================
-def run_gui():
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        print("Error: Do not run the GUI as root.")
-        sys.exit(1)
-
-    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        print("No display available")
-        sys.exit(1)
-
-    from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
-    from PyQt6.QtCore import QTimer
-    from PyQt6.QtGui import QIcon, QAction
-
-    app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)
-
-    tray = QSystemTrayIcon(QIcon.fromTheme("utilities-system-monitor"))
-    tray.setToolTip("AIO v2 Controller")
-
-    menu = QMenu()
-    actions = {}
-
-    for f in GPIO_MAP:
-        a = QAction(f)
-        a.setCheckable(True)
-        a.triggered.connect(lambda c, f=f: GpioController.set_gpio(GPIO_MAP[f], c))
-        menu.addAction(a)
-        actions[f] = a
-
-    menu.addSeparator()
-    power_action = QAction("Power: -- W")
-    power_action.setEnabled(False)
-    menu.addAction(power_action)
-
-    menu.addSeparator()
-    menu.addAction("Quit", app.quit)
-
-    tray.setContextMenu(menu)
-
-    def update_menu():
-        for f, p in GPIO_MAP.items():
-            actions[f].blockSignals(True)
-            actions[f].setChecked(GpioController.get_gpio(p))
-            actions[f].blockSignals(False)
-        total = Telemetry.total_power()
-        power_action.setText(f"Power: {total if total is not None else 'n/a'} W")
-
-    timer = QTimer()
-    timer.setInterval(1000)
-    timer.timeout.connect(update_menu)
-    timer.start()
-
-    tray.show()
-    sys.exit(app.exec())
 
 # ==============================
 # Entrypoint
 # ==============================
 def main():
     if len(sys.argv) == 1:
-        show_basic()
+        for f, p in GPIO_MAP.items():
+            print(f"{f:<5} GPIO{p}: {'ON' if GpioController.get_gpio(p) else 'OFF'}")
         return
 
-    arg = sys.argv[1]
-
-    if arg == "--status":
-        show_detailed()
-        return
-    if arg == "--power":
+    if sys.argv[1] == "--power":
         show_power_live()
         return
-    if arg == "--watch":
+
+    if sys.argv[1] == "--watch":
         show_watch()
         return
-    if arg == "--gui":
-        run_gui()
-        return
+
+    if sys.argv[1] == "--measure":
+        if len(sys.argv) < 3:
+            print("Usage: aiov2_ctl --measure <FEATURE> [--seconds N] [--interval S] [--settle S]")
+            return
+
+        feature = sys.argv[2]
+        seconds, interval, settle = 3.0, 0.2, 1.0
+
+        i = 3
+        while i < len(sys.argv):
+            if sys.argv[i] == "--seconds":
+                seconds = float(sys.argv[i + 1]); i += 2
+            elif sys.argv[i] == "--interval":
+                interval = float(sys.argv[i + 1]); i += 2
+            elif sys.argv[i] == "--settle":
+                settle = float(sys.argv[i + 1]); i += 2
+            else:
+                i += 1
+
+        sys.exit(measure_feature(feature, seconds, settle, interval))
 
     if len(sys.argv) == 3:
         feature = sys.argv[1].upper()
@@ -318,7 +261,7 @@ def main():
             GpioController.set_gpio(GPIO_MAP[feature], state)
             return
 
-    print("Usage: aiov2_ctl [--status|--power|--watch|--gui|<feature> on|off]")
+    print("Usage: aiov2_ctl [--power|--watch|--measure <FEATURE>|<feature> on|off]")
 
 if __name__ == "__main__":
     main()
