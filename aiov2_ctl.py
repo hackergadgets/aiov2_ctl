@@ -94,20 +94,44 @@ class Telemetry:
         return status
 
     @staticmethod
-    def usb_power():
+    def power_rails():
+        """
+        Returns per-rail power data from /sys/class/power_supply
+        Units:
+          voltage: V
+          current: A
+          power:   W
+        """
         base = "/sys/class/power_supply"
+        rails = {}
+
         if not os.path.isdir(base):
-            return None
+            return rails
+
         for dev in os.listdir(base):
+            path = os.path.join(base, dev)
             try:
-                with open(f"{base}/{dev}/current_now") as f:
-                    cur = int(f.read())
-                with open(f"{base}/{dev}/voltage_now") as f:
-                    volt = int(f.read())
-                return round(abs(cur * volt) / 1e12, 2)
+                with open(os.path.join(path, "voltage_now")) as f:
+                    volt = int(f.read()) / 1e6
+                with open(os.path.join(path, "current_now")) as f:
+                    cur = int(f.read()) / 1e6
+
+                power = round(abs(volt * cur), 2)
+
+                rails[dev] = {
+                    "voltage": round(volt, 2),
+                    "current": round(cur, 2),
+                    "power": power,
+                }
             except Exception:
-                pass
-        return None
+                continue
+
+        return rails
+
+    @staticmethod
+    def total_power():
+        rails = Telemetry.power_rails()
+        return round(sum(r["power"] for r in rails.values()), 2) if rails else None
 
     @staticmethod
     def io_users(path):
@@ -142,16 +166,12 @@ def show_basic():
         state = "ON" if GpioController.get_gpio(p) else "OFF"
         print(f"{f:<5} GPIO{p}: {state}")
 
-
 def show_detailed():
     print("Detailed Feature Status")
     print("========================")
 
-    pw = Telemetry.usb_power()
-    if pw is None:
-        print("Overall Power: n/a")
-    else:
-        print(f"Overall Power: {pw} W")
+    total = Telemetry.total_power()
+    print(f"Overall Power: {total if total is not None else 'n/a'} W")
     print("------------------------")
 
     for f, p in GPIO_MAP.items():
@@ -162,57 +182,75 @@ def show_detailed():
         print()
 
 # ==============================
-# GUI (Tray + Status Window)
+# Live Power Mode (Per-rail)
+# ==============================
+def show_power_live():
+    try:
+        while True:
+            rails = Telemetry.power_rails()
+            os.system("clear")
+
+            print("Power Monitor (Ctrl+C to quit)")
+            print("-----------------------------")
+
+            total = 0.0
+            for name, r in rails.items():
+                print(
+                    f"{name:<14} "
+                    f"{r['voltage']:>5.2f} V  "
+                    f"{r['current']:>5.2f} A  "
+                    f"({r['power']:>5.2f} W)"
+                )
+                total += r["power"]
+
+            print("-----------------------------")
+            print(f"Total: {total:.2f} W")
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("\nExiting power monitor.")
+
+# ==============================
+# Watch Mode (Compact)
+# ==============================
+def show_watch():
+    print("Live Status (Ctrl+C to quit)")
+    print("----------------------------")
+    try:
+        while True:
+            states = [
+                f"{f}:{'ON' if GpioController.get_gpio(p) else 'OFF'}"
+                for f, p in GPIO_MAP.items()
+            ]
+            total = Telemetry.total_power()
+            line = "  ".join(states)
+            line += f"  Power:{total if total is not None else 'n/a'}W"
+            print(line, end="\r", flush=True)
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nExiting watch mode.")
+
+# ==============================
+# GUI (Tray)
 # ==============================
 def run_gui():
-    # Prevent running GUI as root (tray icons will not appear under Wayland/X11)
     if hasattr(os, "geteuid") and os.geteuid() == 0:
-        print("Error: Do not run the GUI as root. Run 'aiov2_ctl --gui' as your normal user.")
+        print("Error: Do not run the GUI as root.")
         sys.exit(1)
-
 
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         print("No display available")
         sys.exit(1)
 
-    from PyQt6.QtWidgets import (
-        QApplication,
-        QSystemTrayIcon,
-        QMenu,
-        QWidget,
-        QVBoxLayout,
-        QLabel,
-    )
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QIcon, QAction, QCursor
+    from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
     from PyQt6.QtCore import QTimer
+    from PyQt6.QtGui import QIcon, QAction
 
     app = QApplication(sys.argv)
-    # Ensure a window icon is set at the application level (helps tray visibility)
     app.setQuitOnLastWindowClosed(False)
 
-    app.setQuitOnLastWindowClosed(False)
-
-    icon = QIcon.fromTheme("drive-removable-media")
-    if icon.isNull():
-        icon = QIcon.fromTheme("computer")
-    if icon.isNull():
-        icon = QIcon.fromTheme("utilities-system-monitor")
-    if icon.isNull():
-        icon = QIcon("/usr/share/icons/hicolor/48x48/apps/utilities-terminal.png")
-
-    tray = QSystemTrayIcon()
-    tray.setIcon(icon)
+    tray = QSystemTrayIcon(QIcon.fromTheme("utilities-system-monitor"))
     tray.setToolTip("AIO v2 Controller")
-
-    # Wayland-friendly dummy widget to anchor tray/menu (fixes manual launch)
-    dummy = QWidget()
-    dummy.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
-    dummy.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    dummy.setWindowOpacity(0)
-    dummy.resize(1, 1)
-
-    tray.setVisible(True)
 
     menu = QMenu()
     actions = {}
@@ -230,65 +268,23 @@ def run_gui():
     menu.addAction(power_action)
 
     menu.addSeparator()
-    quit_action = QAction("Quit")
-    quit_action.triggered.connect(app.quit)
-    menu.addAction(quit_action)
+    menu.addAction("Quit", app.quit)
 
     tray.setContextMenu(menu)
-
-    # Status window (left click)
-    window = QWidget()
-    window.setWindowTitle("AIO v2 Status")
-    window.setWindowFlags(Qt.WindowType.Tool)
-    layout = QVBoxLayout(window)
-
-    power_label = QLabel("Overall Power: -- W")
-    layout.addWidget(power_label)
-
-    toggle_actions = {}
-    for f, p in GPIO_MAP.items():
-        chk = QAction(f, window)
-        chk.setCheckable(True)
-        chk.triggered.connect(lambda c, f=f: GpioController.set_gpio(GPIO_MAP[f], c))
-        btn = QLabel()
-        layout.addWidget(btn)
-        toggle_actions[f] = btn
-
-    def refresh_window():
-        pw = Telemetry.usb_power()
-        power_label.setText(f"Overall Power: {pw if pw is not None else 'n/a'} W")
-        for f, p in GPIO_MAP.items():
-            state = GpioController.get_gpio(p)
-            toggle_actions[f].setText(f"{f}: {'ON' if state else 'OFF'}")
-
-    def on_activate(reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            dummy.move(QCursor.pos())
-            dummy.show()
-            dummy.activateWindow()
-            refresh_window()
-            window.show()
-            window.raise_()
-            window.activateWindow()
-        elif reason == QSystemTrayIcon.ActivationReason.Context:
-            tray.contextMenu().popup(QCursor.pos())
-
-    tray.activated.connect(on_activate)
 
     def update_menu():
         for f, p in GPIO_MAP.items():
             actions[f].blockSignals(True)
             actions[f].setChecked(GpioController.get_gpio(p))
             actions[f].blockSignals(False)
-        pw = Telemetry.usb_power()
-        power_action.setText(f"Power: {pw if pw is not None else 'n/a'} W")
+        total = Telemetry.total_power()
+        power_action.setText(f"Power: {total if total is not None else 'n/a'} W")
 
     timer = QTimer()
     timer.setInterval(1000)
     timer.timeout.connect(update_menu)
     timer.start()
 
-    update_menu()
     tray.show()
     sys.exit(app.exec())
 
@@ -299,20 +295,30 @@ def main():
     if len(sys.argv) == 1:
         show_basic()
         return
-    if sys.argv[1] == "--status":
+
+    arg = sys.argv[1]
+
+    if arg == "--status":
         show_detailed()
         return
-    if sys.argv[1] == "--gui":
+    if arg == "--power":
+        show_power_live()
+        return
+    if arg == "--watch":
+        show_watch()
+        return
+    if arg == "--gui":
         run_gui()
         return
+
     if len(sys.argv) == 3:
         feature = sys.argv[1].upper()
         state = sys.argv[2].lower() == "on"
         if feature in GPIO_MAP:
             GpioController.set_gpio(GPIO_MAP[feature], state)
             return
-    print("Usage: aiov2_ctl [--status|--gui|<feature> on|off]")
 
+    print("Usage: aiov2_ctl [--status|--power|--watch|--gui|<feature> on|off]")
 
 if __name__ == "__main__":
     main()
