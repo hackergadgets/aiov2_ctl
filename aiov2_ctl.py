@@ -30,7 +30,7 @@ AC_SUPPLY = "axp22x-ac"
 # Help text
 # ==============================
 HELP_TEXT = f"""
-aiov2_ctl — AIO v2 control + telemetry tool
+aiov2_ctl — HackerGadgets uConsole AIOv2 control + telemetry tool
 
 USAGE:
   aiov2_ctl
@@ -262,10 +262,17 @@ def run_gui():
 
     def refresh():
         viw = Telemetry.battery_v_i_w()
+
+        # Left-click window
         power_label.setText(f"Power: {viw['power'] if viw else 'n/a'} W")
+
+        # Right-click menu (THIS WAS MISSING)
+        power_action.setText(f"Power: {viw['power'] if viw else 'n/a'} W")
+
         for f, p in GPIO_MAP.items():
-            labels[f].setText(f"{f}: {'ON' if GpioController.get_gpio(p) else 'OFF'}")
-            actions[f].setChecked(GpioController.get_gpio(p))
+            state = GpioController.get_gpio(p)
+            labels[f].setText(f"{f}: {'ON' if state else 'OFF'}")
+            actions[f].setChecked(state)
 
     def on_activate(reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
