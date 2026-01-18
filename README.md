@@ -30,8 +30,9 @@ This version controls onboard hardware (GPS, LoRa, SDR, USB power rails) via **d
 
 Install required system packages:
 
-sudo apt update  
-sudo apt install -y python3 python3-pip python3-pyqt6 git  
+`sudo apt update`
+
+`sudo apt install -y python3 python3-pip python3-pyqt6 git`
 
 ---
 
@@ -39,13 +40,15 @@ sudo apt install -y python3 python3-pip python3-pyqt6 git
 
 Recommended install location is `/opt`.
 
+```
 sudo git clone https://github.com/hackergadgets/aiov2_ctl.git /opt/aiov2_ctl  
 cd /opt/aiov2_ctl  
-sudo pip3 install --break-system-packages -r requirements.txt  
+sudo pip3 install --break-system-packages -r requirements.txt
+```
 
 Sanity check:
 
-sudo python3 /opt/aiov2_ctl/aiov2_ctl.py  
+`sudo python3 /opt/aiov2_ctl/aiov2_ctl.py`
 
 ---
 
@@ -53,11 +56,11 @@ sudo python3 /opt/aiov2_ctl/aiov2_ctl.py
 
 View current status of all features:
 
-python3 aiov2_ctl.py  
+`python3 aiov2_ctl.py`
 
 Enable or disable a feature:
 
-python3 aiov2_ctl.py <FEATURE> <on|off>  
+`python3 aiov2_ctl.py <FEATURE> <on|off>`
 
 Supported features:
 
@@ -69,10 +72,10 @@ Supported features:
 Examples:
 
 Turn ON GPS  
-python3 aiov2_ctl.py GPS on  
+`python3 aiov2_ctl.py GPS on ` 
 
 Turn OFF LoRa  
-python3 aiov2_ctl.py LORA off  
+`python3 aiov2_ctl.py LORA off`  
 
 ---
 
@@ -80,17 +83,19 @@ python3 aiov2_ctl.py LORA off
 
 Create a convenience wrapper so the tool can be run from anywhere:
 
+```
 sudo tee /usr/local/bin/aiov2ctl >/dev/null <<'EOF'  
 #!/usr/bin/env bash  
 exec python3 /opt/aiov2_ctl/aiov2_ctl.py "$@"  
-EOF  
+EOF
+```
 
-sudo chmod +x /usr/local/bin/aiov2ctl  
+`sudo chmod +x /usr/local/bin/aiov2ctl`  
 
 Usage:
 
-aiov2ctl status  
-aiov2ctl SDR off  
+`aiov2ctl status`
+`aiov2ctl SDR off`  
 
 ---
 
@@ -98,7 +103,7 @@ aiov2ctl SDR off
 
 Start the tray-based GUI:
 
-python3 aiov2_ctl.py --gui  
+`python3 aiov2_ctl.py --gui`  
 
 A system tray icon will appear.  
 Right-click the icon to toggle features on or off.
@@ -109,20 +114,23 @@ Right-click the icon to toggle features on or off.
 
 ## 6) Autostart GUI on login (recommended)
 
-For desktop systems, use **XDG autostart**.
+For desktop sessions that support XDG autostart (LXQt, XFCE, GNOME, etc.)
 
+```
 mkdir -p ~/.config/autostart  
-nano ~/.config/autostart/aiov2_ctl.desktop  
+nano ~/.config/autostart/aiov2_ctl.desktop
+```
 
 Paste:
 
+```
 [Desktop Entry]  
-Type=Application  
-Name=AIO v2 Controller  
-Comment=AIO v2 tray controller  
-Exec=python3 /opt/aiov2_ctl/aiov2_ctl.py --gui  
-Terminal=false  
-X-GNOME-Autostart-enabled=true  
+Type=Application
+Name=AIO v2 Controller
+Comment=AIO v2 tray controller
+Exec=python3 /opt/aiov2_ctl/aiov2_ctl.py --gui
+Terminal=false
+```
 
 Save and reboot.
 
@@ -132,7 +140,7 @@ Save and reboot.
 
 If GPIO or desktop services initialize slowly, change `Exec=` to:
 
-Exec=bash -c "sleep 5 && python3 /opt/aiov2_ctl/aiov2_ctl.py --gui"
+```Exec=bash -c "sleep 5 && python3 /opt/aiov2_ctl/aiov2_ctl.py --gui"```
 
 ---
 
@@ -141,9 +149,3 @@ Exec=bash -c "sleep 5 && python3 /opt/aiov2_ctl/aiov2_ctl.py --gui"
 - This fork uses **direct GPIO control** via `pinctrl`
 - `pinctrl` access typically requires elevated privileges
 - GUI autostart runs as the logged-in user; GPIO permissions may need adjustment (udev / sudoers)
-
----
-
-## License
-
-Same license as the original repository.
