@@ -18,11 +18,10 @@ This version controls onboard hardware (GPS, LoRa, SDR, USB power rails) via **d
 
 ## Requirements
 
-- Debian / Raspberry Pi OS (Bookworm / Trixie recommended)
-- Python 3.9+
-- Raspberry Pi–compatible board with GPIO access
-- Hardware wired so that feature enable lines are connected to GPIO pins
-- `pinctrl` available on the system
+- HackerGadgets uConsole AIO v2 Upgrade Kit (https://hackergadgets.com/products/uconsole-upgrade-kit?variant=47038702682286)
+- uConsole running Debian / Raspberry Pi OS (Bookworm or Trixie recommended)
+- Python 3.9 or newer
+- pinctrl available on the system (used for direct GPIO control of the AIO v2 board)
 
 ---
 
@@ -38,17 +37,24 @@ Install required system packages:
 
 ## 2) Install aiov2_ctl (system-wide, no virtualenv)
 
-Recommended install location is `/opt`.
+The recommended install location is `/usr/local/bin`.
+
+Clone the repository anywhere (e.g. your home directory), then install the script system-wide:
 
 ```
-sudo git clone https://github.com/hackergadgets/aiov2_ctl.git /opt/aiov2_ctl  
-cd /opt/aiov2_ctl  
+git clone https://github.com/hackergadgets/aiov2_ctl.git
+cd aiov2_ctl
 sudo pip3 install --break-system-packages -r requirements.txt
+sudo cp aiov2_ctl.py /usr/local/bin/aiov2_ctl
+sudo chmod +x /usr/local/bin/aiov2_ctl
 ```
 
 Sanity check:
 
-`sudo python3 /opt/aiov2_ctl/aiov2_ctl.py`
+```
+aiov2_ctl
+aiov2_ctl --status
+```
 
 ---
 
@@ -56,11 +62,15 @@ Sanity check:
 
 View current status of all features:
 
-`python3 aiov2_ctl.py`
+`aiov2_ctl`
+
+View detailed status (including overall power and GPS info):
+
+`aiov2_ctl --status`
 
 Enable or disable a feature:
 
-`python3 aiov2_ctl.py <FEATURE> <on|off>`
+`aiov2_ctl <FEATURE> <on|off>`
 
 Supported features:
 
@@ -71,53 +81,35 @@ Supported features:
 
 Examples:
 
-Turn ON GPS  
-`python3 aiov2_ctl.py GPS on ` 
-
-Turn OFF LoRa  
-`python3 aiov2_ctl.py LORA off`  
+```
+aiov2_ctl GPS on
+aiov2_ctl LORA off
+aiov2_ctl SDR on
+```
 
 ---
 
-## 4) Optional: global command
-
-Create a convenience wrapper so the tool can be run from anywhere:
-
-```
-sudo tee /usr/local/bin/aiov2ctl >/dev/null <<'EOF'  
-#!/usr/bin/env bash  
-exec python3 /opt/aiov2_ctl/aiov2_ctl.py "$@"  
-EOF
-```
-
-`sudo chmod +x /usr/local/bin/aiov2ctl`  
-
-Usage:
-
-`aiov2ctl status`
-`aiov2ctl SDR off`  
-
----
-
-## 5) GUI mode (system tray)
+## 4) GUI mode (system tray)
 
 Start the tray-based GUI:
 
-`python3 aiov2_ctl.py --gui`  
+`aiov2_ctl --gui`  
 
-A system tray icon will appear.  
-Right-click the icon to toggle features on or off.
+Behaviour:
+- Left click: opens a small status window (Wayland-safe)
+- Right click: opens the tray menu to toggle hardware
+- Overall board power draw is shown live (polled once per second)
 
 ![System Tray](img/system_tray.png)
 
 ---
 
-## 6) Autostart GUI on login (recommended)
+## 5) Autostart GUI on login (recommended)
 
 For desktop sessions that support XDG autostart (LXQt, XFCE, GNOME, etc.)
 
 ```
-mkdir -p ~/.config/autostart  
+mkdir -p ~/.config/autostart
 nano ~/.config/autostart/aiov2_ctl.desktop
 ```
 
@@ -128,7 +120,7 @@ Paste:
 Type=Application
 Name=AIO v2 Controller
 Comment=GPIO tray controller
-Exec=/usr/bin/python3 /opt/aiov2_ctl/aiov2_ctl.py --gui
+Exec=/usr/bin/python3 /usr/local/bin/aiov2_ctl --gui
 Terminal=false
 XDG_AUTOSTART_DELAY=5
 ```
@@ -141,12 +133,4 @@ Save and reboot.
 
 If GPIO or desktop services initialize slowly, change `Exec=` to:
 
-```Exec=bash -c "sleep 5 && python3 /opt/aiov2_ctl/aiov2_ctl.py --gui"```
-
----
-
-## Notes
-
-- This fork uses **direct GPIO control** via `pinctrl`
-- `pinctrl` access typically requires elevated privileges
-- GUI autostart runs as the logged-in user; GPIO permissions may need adjustment (udev / sudoers)
+```Exec=bash -c "sleep 5 && /usr/bin/python3 /usr/local/bin/aiov2_ctl --gui"```
