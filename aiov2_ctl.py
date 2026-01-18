@@ -1,214 +1,285 @@
+#!/usr/bin/env python3
 import sys
 import os
 import subprocess
+import time
+import json
 
+# ==============================
 # Configuration
-# GPIO Pin Definitions
+# ==============================
 GPIO_MAP = {
     "GPS": 27,
     "LORA": 16,
     "SDR": 7,
-    "USB": 23
+    "USB": 23,
 }
 
+FEATURE_META = {
+    "GPS":  {"device": "/dev/ttyAMA0", "type": "serial"},
+    "LORA": {"type": "spi"},
+    "SDR":  {"type": "usb"},
+    "USB":  {"type": "usb"},
+}
+
+# ==============================
+# GPIO Helpers
+# ==============================
 class GpioController:
-    """Handle GPIO control logic"""
-    
     @staticmethod
-    def run_command(cmd):
-        """Run shell command and return output"""
+    def run(cmd):
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            return result.stdout.strip()
-        except subprocess.CalledProcessError as e:
-            # In non-Raspberry Pi environments or when command fails, might need silent handling or logging
-            # print(f"Run command error {' '.join(cmd)}: {e}")
-            return None
-        except Exception as e:
-            print(f"Unknown error: {e}")
+            return subprocess.check_output(cmd, text=True).strip()
+        except Exception:
             return None
 
     @staticmethod
     def set_gpio(pin, state):
-        """Set GPIO pin state (True for High/ON, False for Low/OFF)"""
-        op = "dh" if state else "dl"
-        cmd = ["pinctrl", "set", str(pin), "op", op]
-        GpioController.run_command(cmd)
-        state_str = "ON" if state else "OFF"
-        print(f"GPIO {pin} set to {state_str}")
+        subprocess.call([
+            "pinctrl",
+            "set",
+            str(pin),
+            "op",
+            "dh" if state else "dl",
+        ])
 
     @staticmethod
-    def get_gpio_status(pin):
-        """Get GPIO pin status. Returns True for High, False for Low"""
-        cmd = ["pinctrl", "get", str(pin)]
-        output = GpioController.run_command(cmd)
-        if output:
-            # Output usually contains "hi" or "lo"
-            if "hi" in output:
-                return True
-            elif "lo" in output:
-                return False
-        return False
+    def get_gpio(pin):
+        out = GpioController.run(["pinctrl", "get", str(pin)])
+        return bool(out and "hi" in out)
+
+# ==============================
+# Telemetry
+# ==============================
+class Telemetry:
+    @staticmethod
+    def gpsd_devices():
+        try:
+            out = subprocess.check_output(["gpspipe", "-r"], text=True, timeout=1)
+            for line in out.splitlines():
+                if '"class":"DEVICES"' in line:
+                    return json.loads(line)
+        except Exception:
+            pass
+        return None
 
     @staticmethod
-    def show_all_status():
-        """Show status of all features"""
-        print("Current Feature Status:")
-        print("==========================")
-        for feature, pin in GPIO_MAP.items():
-            is_on = GpioController.get_gpio_status(pin)
-            status_str = "ON" if is_on else "OFF"
-            print(f"{feature:<5} (GPIO{pin}): {status_str}")
-        print("==========================")
+    def gps_status():
+        devices = Telemetry.gpsd_devices()
+        if not devices or not devices.get("devices"):
+            return {"state": "no-device"}
 
+        status = {"state": "active", "tpv": None, "sky": None}
+        try:
+            proc = subprocess.Popen(
+                ["gpspipe", "-w"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            start = time.time()
+            while time.time() - start < 1.0:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                if '"class":"TPV"' in line:
+                    status["tpv"] = json.loads(line)
+                elif '"class":"SKY"' in line:
+                    status["sky"] = json.loads(line)
+                if status["tpv"] or status["sky"]:
+                    break
+            proc.terminate()
+        except Exception:
+            pass
+        return status
+
+    @staticmethod
+    def usb_power():
+        base = "/sys/class/power_supply"
+        if not os.path.isdir(base):
+            return None
+        for dev in os.listdir(base):
+            try:
+                with open(f"{base}/{dev}/current_now") as f:
+                    cur = int(f.read())
+                with open(f"{base}/{dev}/voltage_now") as f:
+                    volt = int(f.read())
+                return round(abs(cur * volt) / 1e12, 2)
+            except Exception:
+                pass
+        return None
+
+    @staticmethod
+    def io_users(path):
+        try:
+            out = subprocess.check_output(["lsof", path], text=True)
+            return list({line.split()[0] for line in out.splitlines()[1:]})
+        except Exception:
+            return []
+
+# ==============================
+# Status Assembly
+# ==============================
+def feature_status(name, pin):
+    on = GpioController.get_gpio(pin)
+    info = {"enabled": on, "gpio": pin}
+
+    if name == "GPS" and on:
+        info["gps"] = Telemetry.gps_status()
+        dev = FEATURE_META["GPS"].get("device")
+        info["device"] = dev
+        info["users"] = Telemetry.io_users(dev)
+
+    return info
+
+# ==============================
+# CLI Output
+# ==============================
+def show_basic():
+    print("Feature Status")
+    print("====================")
+    for f, p in GPIO_MAP.items():
+        state = "ON" if GpioController.get_gpio(p) else "OFF"
+        print(f"{f:<5} GPIO{p}: {state}")
+
+
+def show_detailed():
+    print("Detailed Feature Status")
+    print("========================")
+
+    pw = Telemetry.usb_power()
+    if pw is None:
+        print("Overall Power: n/a")
+    else:
+        print(f"Overall Power: {pw} W")
+    print("------------------------")
+
+    for f, p in GPIO_MAP.items():
+        data = feature_status(f, p)
+        print(f"{f} (GPIO{p})")
+        for k, v in data.items():
+            print(f"  {k}: {v}")
+        print()
+
+# ==============================
+# GUI (Tray + Status Window)
+# ==============================
 def run_gui():
-    """Run System Tray GUI"""
-    try:
-        from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QWidget
-        from PyQt6.QtGui import QIcon, QAction, QCursor
-        from PyQt6.QtCore import QTimer, Qt
-    except ImportError:
-        print("Error: PyQt6 not installed. Please run 'pip install PyQt6' or use command line mode in headless environment.")
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        print("No display available")
         sys.exit(1)
 
-    class AioTrayApp:
-        def __init__(self):
-            self.app = QApplication(sys.argv)
-            self.app.setQuitOnLastWindowClosed(False)
+    from PyQt6.QtWidgets import (
+        QApplication,
+        QSystemTrayIcon,
+        QMenu,
+        QWidget,
+        QVBoxLayout,
+        QLabel,
+    )
+    from PyQt6.QtGui import QIcon, QAction, QCursor
+    from PyQt6.QtCore import QTimer
 
-            # Create Icon
-            self.tray_icon = QSystemTrayIcon()
-            # Use standard system icon or placeholder
-            icon = QIcon.fromTheme("preferences-system", QIcon.fromTheme("applications-system"))
-            if icon.isNull():
-                 style = self.app.style()
-                 icon = style.standardIcon(style.StandardPixmap.SP_ComputerIcon)
-            
-            self.tray_icon.setIcon(icon)
-            self.tray_icon.setVisible(True)
-            self.tray_icon.setToolTip("AIO V2 Controller")
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
 
-            # Dummy Widget for Wayland popup menu parent
-            self.dummy_widget = QWidget()
-            self.dummy_widget.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
-            self.dummy_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-            self.dummy_widget.setWindowOpacity(0) # Invisible
-            self.dummy_widget.resize(1, 1)
+    icon = QIcon.fromTheme("drive-removable-media")
+    if icon.isNull():
+        icon = QIcon.fromTheme("computer")
+    if icon.isNull():
+        icon = QIcon.fromTheme("utilities-system-monitor")
+    if icon.isNull():
+        icon = QIcon("/usr/share/icons/hicolor/48x48/apps/utilities-terminal.png")
 
-            # Create Menu
-            self.menu = QMenu(self.dummy_widget)
-            self.actions = {}
+    tray = QSystemTrayIcon(icon)
+    menu = QMenu()
+    actions = {}
 
-            # Add Feature Actions
-            for feature in GPIO_MAP.keys():
-                action = QAction(feature, self.menu)
-                action.setCheckable(True)
-                action.triggered.connect(lambda checked, f=feature: self.toggle_feature(f, checked))
-                self.menu.addAction(action)
-                self.actions[feature] = action
+    for f in GPIO_MAP:
+        a = QAction(f)
+        a.setCheckable(True)
+        a.triggered.connect(lambda c, f=f: GpioController.set_gpio(GPIO_MAP[f], c))
+        menu.addAction(a)
+        actions[f] = a
 
-            self.menu.addSeparator()
+    menu.addSeparator()
+    power_action = QAction("Power: -- W")
+    power_action.setEnabled(False)
+    menu.addAction(power_action)
 
-            # Add Quit Action
-            quit_action = QAction("Quit", self.menu)
-            quit_action.triggered.connect(self.app.quit)
-            self.menu.addAction(quit_action)
+    menu.addSeparator()
+    quit_action = QAction("Quit")
+    quit_action.triggered.connect(app.quit)
+    menu.addAction(quit_action)
 
-            self.tray_icon.setContextMenu(self.menu)
-            
-            # Handle Left Click
-            self.tray_icon.activated.connect(self.on_tray_icon_activated)
-            
-            # Refresh status before menu shows
-            self.menu.aboutToShow.connect(self.update_status)
-            # Hide dummy widget when menu closes
-            self.menu.aboutToHide.connect(self.dummy_widget.hide)
+    tray.setContextMenu(menu)
 
-            # Initial status update
-            self.update_status()
+    # Status window (left click)
+    window = QWidget()
+    window.setWindowTitle("AIO v2 Status")
+    layout = QVBoxLayout(window)
+    status_label = QLabel()
+    layout.addWidget(status_label)
 
-        def on_tray_icon_activated(self, reason):
-            """Left click to show menu"""
-            if reason == QSystemTrayIcon.ActivationReason.Trigger:
-                # Wayland workaround: Delay showing menu slightly
-                QTimer.singleShot(100, self.show_menu)
+    def refresh_window():
+        lines = []
+        pw = Telemetry.usb_power()
+        lines.append(f"Overall Power: {pw if pw is not None else 'n/a'} W")
+        lines.append("")
+        for f, p in GPIO_MAP.items():
+            state = "ON" if GpioController.get_gpio(p) else "OFF"
+            lines.append(f"{f}: {state}")
+        status_label.setText("\n".join(lines))
 
-        def show_menu(self):
-            # Wayland workaround: Ensure parent gets focus
-            self.dummy_widget.move(QCursor.pos())
-            self.dummy_widget.setWindowOpacity(1) # Visible
-            self.dummy_widget.show()
-            self.dummy_widget.activateWindow()
-            # Use popup instead of exec to run non-blocking
-            self.menu.popup(QCursor.pos())
+    def on_activate(reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            refresh_window()
+            window.show()
+            window.raise_()
+            window.activateWindow()
+        elif reason == QSystemTrayIcon.ActivationReason.Context:
+            tray.contextMenu().popup(QCursor.pos())
 
-        def update_status(self):
-            """Read status from hardware and update menu"""
-            for feature, pin in GPIO_MAP.items():
-                is_on = GpioController.get_gpio_status(pin)
-                
-                # Block signals to avoid triggering toggle handler
-                self.actions[feature].blockSignals(True)
-                self.actions[feature].setChecked(is_on)
-                self.actions[feature].blockSignals(False)
+    tray.activated.connect(on_activate)
 
-        def toggle_feature(self, feature, checked):
-            """Toggle feature switch"""
-            pin = GPIO_MAP.get(feature)
-            if pin is not None:
-                GpioController.set_gpio(pin, checked)
-                # Update status to confirm change
-                self.update_status()
+    def update_menu():
+        for f, p in GPIO_MAP.items():
+            actions[f].blockSignals(True)
+            actions[f].setChecked(GpioController.get_gpio(p))
+            actions[f].blockSignals(False)
+        pw = Telemetry.usb_power()
+        power_action.setText(f"Power: {pw if pw is not None else 'n/a'} W")
 
-        def run(self):
-            sys.exit(self.app.exec())
+    timer = QTimer()
+    timer.setInterval(1000)
+    timer.timeout.connect(update_menu)
+    timer.start()
 
-    app = AioTrayApp()
-    app.run()
+    update_menu()
+    tray.show()
+    sys.exit(app.exec())
 
-def show_usage():
-    print("Usage:")
-    print(f"  python {sys.argv[0]}                    # View all feature status")
-    print(f"  python {sys.argv[0]} <feature> <on/off> # Set feature switch")
-    print(f"  python {sys.argv[0]} --gui              # Start System Tray GUI")
-    print("")
-    print("Features: " + ", ".join(GPIO_MAP.keys()))
-    print("Examples:")
-    print(f"  python {sys.argv[0]} GPS on             # Turn ON GPS")
-    print(f"  python {sys.argv[0]} LORA off           # Turn OFF LoRa")
-
+# ==============================
+# Entrypoint
+# ==============================
 def main():
     if len(sys.argv) == 1:
-        # No arguments, show status
-        GpioController.show_all_status()
-    elif len(sys.argv) == 2:
-        if sys.argv[1] == '--gui':
-            run_gui()
-        else:
-            print("Error: Invalid argument")
-            show_usage()
-            sys.exit(1)
-    elif len(sys.argv) == 3:
+        show_basic()
+        return
+    if sys.argv[1] == "--status":
+        show_detailed()
+        return
+    if sys.argv[1] == "--gui":
+        run_gui()
+        return
+    if len(sys.argv) == 3:
         feature = sys.argv[1].upper()
-        state_str = sys.argv[2].lower()
-        
-        if feature not in GPIO_MAP:
-            print(f"Error: Unknown feature '{sys.argv[1]}'")
-            show_usage()
-            sys.exit(1)
-            
-        if state_str not in ['on', 'off']:
-            print(f"Error: State must be 'on' or 'off'")
-            show_usage()
-            sys.exit(1)
-            
-        state = (state_str == 'on')
-        pin = GPIO_MAP[feature]
-        GpioController.set_gpio(pin, state)
-    else:
-        print("Error: Incorrect number of arguments")
-        show_usage()
-        sys.exit(1)
+        state = sys.argv[2].lower() == "on"
+        if feature in GPIO_MAP:
+            GpioController.set_gpio(GPIO_MAP[feature], state)
+            return
+    print("Usage: aiov2_ctl [--status|--gui|<feature> on|off]")
+
 
 if __name__ == "__main__":
     main()
