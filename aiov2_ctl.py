@@ -6,6 +6,58 @@ import time
 import json
 from statistics import mean
 
+def rerun_with_sudo(extra_args=None):
+    cmd = ["sudo", sys.executable, os.path.realpath(__file__)]
+    if extra_args:
+        cmd += extra_args
+    else:
+        cmd += sys.argv[1:]
+
+    os.execvp("sudo", cmd)
+
+
+def run_cmd(cmd, cwd=None):
+    try:
+        subprocess.check_call(cmd, cwd=cwd)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+def git_pull(repo):
+    try:
+        out = subprocess.check_output(
+            ["git", "pull", "--ff-only"],
+            cwd=repo,
+            stderr=subprocess.STDOUT,
+            text=True
+        ).strip()
+        return out
+    except subprocess.CalledProcessError as e:
+        return None
+
+def get_git_root():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            stderr=subprocess.DEVNULL,
+            text=True
+        ).strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+def get_git_branch(repo):
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo,
+            text=True
+        ).strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+
 # ==============================
 # Configuration
 # ==============================
@@ -40,17 +92,28 @@ USAGE:
   aiov2_ctl --gui
   aiov2_ctl --measure <FEATURE> [--seconds N] [--interval S] [--settle S]
   aiov2_ctl <FEATURE> on|off
+  aiov2_ctl --install
+  aiov2_ctl --update
   aiov2_ctl --help
 
 FEATURES:
   {', '.join(GPIO_MAP.keys())}
+
+COMMANDS:
+  --status     One-shot system + battery snapshot
+  --power      Live power monitor (Ctrl+C to exit)
+  --watch      Compact live GPIO + power line
+  --gui        System tray controller
+  --measure    Measure power delta of a feature
+  --install    Install tool to /usr/local/bin
+  --update     Pull latest version from git and reinstall
 
 NOTES:
   • Battery power is the truth source
   • <0.05 W deltas are below noise floor
   • --status is a one-shot snapshot
   • GUI left-click opens status window
-  • Right-click opens menu
+  • GUI right-click opens menu
 """
 
 # ==============================
@@ -417,6 +480,65 @@ def run_gui():
     tray.show()
     sys.exit(app.exec())
 
+
+def install_self():
+    dst = "/usr/local/bin/aiov2_ctl"
+
+    repo = get_git_root()
+    if repo:
+        src = os.path.join(repo, "aiov2_ctl.py")
+    else:
+        src = os.path.realpath(__file__)
+
+    if os.path.realpath(src) == os.path.realpath(dst):
+        print("Already installed (source and destination are the same).")
+        return 0
+
+    if os.geteuid() != 0:
+        print("Install requires sudo.")
+        print("Run: sudo aiov2_ctl --install")
+        return 1
+
+    print(f"Installing {src} → {dst}")
+    subprocess.check_call(["cp", src, dst])
+    subprocess.check_call(["chmod", "+x", dst])
+
+    print("Install complete.")
+    return 0
+
+def update_self():
+    repo = get_git_root()
+    if not repo:
+        print("Not inside a git repository. Cannot update.")
+        return 1
+
+    branch = get_git_branch(repo)
+    if not branch:
+        print("Could not determine git branch.")
+        return 1
+
+    print(f"Updating from git ({branch})…")
+
+    result = git_pull(repo)
+    if result is None:
+        print("Git pull failed. Resolve manually.")
+        return 1
+
+    if "Already up to date" in result:
+        print("Already up to date.")
+        return 0
+
+    print("Update pulled:")
+    print(result)
+
+    print("Reinstalling updated version…")
+
+    if os.geteuid() != 0:
+        rerun_with_sudo(["--install"])
+        return 0
+
+    return install_self()
+
 # ==============================
 # Entrypoint
 # ==============================
@@ -430,19 +552,42 @@ def main():
 
     if arg in ("--help", "-h"):
         print(HELP_TEXT)
+
+    elif arg == "--install":
+        sys.exit(install_self())
+
+    elif arg == "--update":
+        sys.exit(update_self())
+
     elif arg == "--status":
         show_status()
+
     elif arg == "--power":
         show_power_live()
+
     elif arg == "--watch":
         show_watch()
+
     elif arg == "--gui":
         run_gui()
+
     elif arg == "--measure":
+        if len(sys.argv) < 3:
+            print("Usage: aiov2_ctl --measure <FEATURE>")
+            sys.exit(1)
         feature = sys.argv[2]
         sys.exit(measure_feature(feature))
+
     elif len(sys.argv) == 3:
-        GpioController.set_gpio(GPIO_MAP[arg.upper()], sys.argv[2].lower() == "on")
+        feature = arg.upper()
+        state = sys.argv[2].lower()
+
+        if feature not in GPIO_MAP or state not in ("on", "off"):
+            print("Use --help")
+            sys.exit(1)
+
+        GpioController.set_gpio(GPIO_MAP[feature], state == "on")
+
     else:
         print("Use --help")
 
