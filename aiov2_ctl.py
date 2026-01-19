@@ -507,6 +507,12 @@ def install_self():
     return 0
 
 def update_self():
+    # NEVER run git as root
+    if os.geteuid() == 0:
+        print("Do not run --update with sudo.")
+        print("Run: aiov2_ctl --update")
+        return 1
+
     repo = get_git_root()
     if not repo:
         print("Not inside a git repository. Cannot update.")
@@ -519,25 +525,15 @@ def update_self():
 
     print(f"Updating from git ({branch})…")
 
-    result = git_pull(repo)
-    if result is None:
+    if not run_cmd(["git", "pull", "--ff-only"], cwd=repo):
         print("Git pull failed. Resolve manually.")
         return 1
 
-    if "Already up to date" in result:
-        print("Already up to date.")
-        return 0
-
-    print("Update pulled:")
-    print(result)
-
     print("Reinstalling updated version…")
 
-    if os.geteuid() != 0:
-        rerun_with_sudo(["--install"])
-        return 0
-
-    return install_self()
+    # Escalate ONLY for install
+    rerun_with_sudo(["--install"])
+    return 0
 
 # ==============================
 # Entrypoint
