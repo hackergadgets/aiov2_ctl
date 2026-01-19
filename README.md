@@ -50,8 +50,7 @@ Clone the repository anywhere (e.g. your home directory), then install:
 git clone https://github.com/hackergadgets/aiov2_ctl.git
 cd aiov2_ctl
 
-sudo pip3 install --break-system-packages -r requirements.txt
-sudo aiov2_ctl --install
+sudo python3 ./aiov2_ctl.py --install
 ```
 
 Sanity check:

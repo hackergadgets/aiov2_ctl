@@ -541,17 +541,33 @@ def install_self():
     repo = get_git_root()
     if repo:
         src = os.path.join(repo, "aiov2_ctl.py")
+        req = os.path.join(repo, "requirements.txt")
     else:
         src = os.path.realpath(__file__)
-
-    if os.path.realpath(src) == os.path.realpath(dst):
-        print("Already installed (source and destination are the same).")
-        return 0
+        req = None
 
     if os.geteuid() != 0:
         print("Install requires sudo.")
-        print("Run: sudo aiov2_ctl --install")
+        print("Run: sudo python3 ./aiov2_ctl.py --install")
         return 1
+
+    # Install Python requirements (if available)
+    if req and os.path.exists(req):
+        print("Installing Python dependencies…")
+        subprocess.check_call([
+            sys.executable,
+            "-m", "pip",
+            "install",
+            "--break-system-packages",
+            "-r", req
+        ])
+    else:
+        print("No requirements.txt found, skipping dependency install.")
+
+    # Install script
+    if os.path.realpath(src) == os.path.realpath(dst):
+        print("Already installed.")
+        return 0
 
     print(f"Installing {src} → {dst}")
     subprocess.check_call(["cp", src, dst])
