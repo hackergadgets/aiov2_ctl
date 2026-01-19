@@ -97,17 +97,66 @@ class Telemetry:
             return None
 
     @staticmethod
+    def battery_capacity():
+        return Telemetry._read_int(
+            f"/sys/class/power_supply/{BATTERY_SUPPLY}/capacity"
+        )
+
+    @staticmethod
     def battery_v_i_w():
-        v = Telemetry._read_int(f"/sys/class/power_supply/{BATTERY_SUPPLY}/voltage_now")
-        i = Telemetry._read_int(f"/sys/class/power_supply/{BATTERY_SUPPLY}/current_now")
+        v = Telemetry._read_int(
+            f"/sys/class/power_supply/{BATTERY_SUPPLY}/voltage_now"
+        )
+        i = Telemetry._read_int(
+            f"/sys/class/power_supply/{BATTERY_SUPPLY}/current_now"
+        )
         if v is None or i is None:
             return None
+
         v /= 1e6
         i /= 1e6
+
         return {
             "voltage": round(v, 2),
-            "current": round(i, 2),
-            "power": round(abs(v * i), 2),
+            "current": round(i, 2),      # signed
+            "power": round(v * i, 2),    # signed
+        }
+
+    @staticmethod
+    def power_summary():
+        viw = Telemetry.battery_v_i_w()
+        if not viw:
+            return None
+
+        ac = Telemetry.ac_online()
+        status = Telemetry.battery_status() or "n/a"
+        cap = Telemetry.battery_capacity()
+
+        cur = viw["current"]
+
+        if cur > 0.05:
+            direction = "charging"
+        elif cur < -0.05:
+            direction = "discharging"
+        else:
+            direction = "idle"
+
+        if ac and direction == "charging":
+            mode = "AC powering system + battery"
+        elif ac:
+            mode = "AC powering system"
+        else:
+            mode = "Battery powering system"
+
+        return {
+            "source": "AC" if ac else "BAT",
+            "status": status,
+            "capacity": cap,
+            "direction": direction,
+            "mode": mode,
+            "voltage": viw["voltage"],
+            "current": round(abs(cur), 2),
+            "power": round(abs(viw["power"]), 2),
         }
 
 # ==============================
@@ -116,6 +165,7 @@ class Telemetry:
 def sample_battery_power(seconds=3.0, interval=0.2):
     currents, powers = [], []
     voltage = None
+
     end = time.time() + seconds
     while time.time() < end:
         viw = Telemetry.battery_v_i_w()
@@ -124,8 +174,10 @@ def sample_battery_power(seconds=3.0, interval=0.2):
             currents.append(viw["current"])
             powers.append(viw["power"])
         time.sleep(interval)
+
     if not currents:
         return None
+
     return {
         "voltage": voltage,
         "current_mean": round(mean(currents), 2),
@@ -176,13 +228,25 @@ def measure_feature(feature, seconds=3.0, settle=1.0, interval=0.2):
 def show_power_live():
     try:
         while True:
-            viw = Telemetry.battery_v_i_w()
+            summary = Telemetry.power_summary()
             os.system("clear")
             print("Power Monitor (Ctrl+C)")
             print("----------------------")
-            print(f"Source: {'AC' if Telemetry.ac_online() else 'BAT'} | {Telemetry.battery_status()}")
-            if viw:
-                print(f"{viw['voltage']} V  {viw['current']} A  ({viw['power']} W)")
+
+            if not summary:
+                print("Telemetry unavailable")
+            else:
+                print(f"Source: {summary['source']} | {summary['status']}")
+                print(
+                    f"Battery: {summary['capacity']}% | "
+                    f"{summary['current']} A ({summary['direction']})"
+                )
+                print(
+                    f"Battery rail: {summary['voltage']} V | "
+                    f"{summary['power']} W"
+                )
+                print(f"Mode: {summary['mode']}")
+
             time.sleep(1)
     except KeyboardInterrupt:
         pass
@@ -195,18 +259,20 @@ def show_watch():
                 for f, p in GPIO_MAP.items()
             ]
 
-            viw = Telemetry.battery_v_i_w()
-            pwr = f"{viw['power']:.2f}W" if viw else "n/a"
+            summary = Telemetry.power_summary()
+            if summary:
+                print(
+                    "  ".join(states)
+                    + f"  Src:{summary['source']}"
+                    + f"  Batt:{summary['status']}"
+                    + f"  {summary['capacity']}%"
+                    + f"  {summary['power']:.2f}W",
+                    end="\r",
+                    flush=True,
+                )
+            else:
+                print("  ".join(states) + "  Power:n/a", end="\r", flush=True)
 
-            src = "AC" if Telemetry.ac_online() else "BAT"
-            batt = Telemetry.battery_status() or "n/a"
-
-            print(
-                "  ".join(states)
-                + f"  Src:{src}  Batt:{batt}  Power:{pwr}",
-                end="\r",
-                flush=True,
-            )
             time.sleep(1)
     except KeyboardInterrupt:
         pass
@@ -232,14 +298,12 @@ def run_gui():
     tray = QSystemTrayIcon(QIcon.fromTheme("utilities-system-monitor"))
     tray.setToolTip("AIO v2 Controller")
 
-    # Dummy anchor (Wayland fix)
     dummy = QWidget()
     dummy.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
     dummy.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     dummy.setWindowOpacity(0)
     dummy.resize(1, 1)
 
-    # Context menu
     menu = QMenu()
     actions = {}
     for f, p in GPIO_MAP.items():
@@ -258,7 +322,6 @@ def run_gui():
     menu.addAction("Quit", app.quit)
     tray.setContextMenu(menu)
 
-    # Left-click window
     window = QWidget()
     window.setWindowTitle("AIO v2 Status")
     window.setWindowFlags(Qt.WindowType.Tool)
@@ -274,13 +337,16 @@ def run_gui():
         labels[f] = lbl
 
     def refresh():
-        viw = Telemetry.battery_v_i_w()
+        summary = Telemetry.power_summary()
 
-        # Left-click window
-        power_label.setText(f"Power: {viw['power'] if viw else 'n/a'} W")
-
-        # Right-click menu (THIS WAS MISSING)
-        power_action.setText(f"Power: {viw['power'] if viw else 'n/a'} W")
+        if summary:
+            power_label.setText(
+                f"{summary['mode']} | {summary['power']} W | {summary['capacity']}%"
+            )
+            power_action.setText(f"Power: {summary['power']} W")
+        else:
+            power_label.setText("Power: n/a")
+            power_action.setText("Power: n/a")
 
         for f, p in GPIO_MAP.items():
             state = GpioController.get_gpio(p)
