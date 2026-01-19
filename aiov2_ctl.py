@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 import json
+import shutil
 from statistics import mean
 
 def rerun_with_sudo(extra_args=None):
@@ -97,6 +98,9 @@ USAGE:
   aiov2_ctl --help
   aiov2_ctl --autostart
   aiov2_ctl --no-autostart
+  sudo aiov2_ctl --add-apps
+  sudo aiov2_ctl --remove-apps
+  sudo aiov2_ctl  --sync-rt
 
 FEATURES:
   {', '.join(GPIO_MAP.keys())}
@@ -111,6 +115,9 @@ COMMANDS:
   --update     Pull latest version from git and reinstall
   --autostart        Enable GUI autostart on login
   --no-autostart     Disable GUI autostart
+  --add-apps   Install HackerGadgets AIO apps + sync RTC
+  --sync-rtc   Write current system time to hardware RTC
+  --remove-apps   Remove HackerGadgets AIO apps
 
 NOTES:
   • Battery power is the truth source
@@ -166,6 +173,77 @@ def disable_autostart():
     else:
         print("Autostart already disabled.")
 
+    return 0
+
+def add_apps():
+    if os.geteuid() != 0:
+        print("This command requires sudo.")
+        print("Run: sudo aiov2_ctl --add-apps")
+        return 1
+
+    print("Installing HackerGadgets AIO apps…")
+
+    subprocess.check_call(["apt", "update"])
+
+    subprocess.check_call([
+        "apt", "--install-recommends",
+        "install",
+        "hackergadgets-uconsole-aio-board",
+        "-y"
+    ])
+
+    subprocess.check_call([
+        "apt", "install",
+        "meshtastic-mui",
+        "-y"
+    ])
+
+    print("Useful Apps installed.")
+    return 0
+
+def remove_apps():
+    if os.geteuid() != 0:
+        print("This command requires sudo.")
+        print("Run: sudo aiov2_ctl --remove-apps")
+        return 1
+
+    print("Removing HackerGadgets AIO apps…")
+
+    subprocess.call([
+        "apt", "remove",
+        "meshtastic-mui",
+        "-y"
+    ])
+
+    subprocess.call([
+        "apt", "remove",
+        "hackergadgets-uconsole-aio-board",
+        "-y"
+    ])
+
+    subprocess.call([
+        "apt", "autoremove",
+        "-y"
+    ])
+
+    print("Apps removed.")
+    return 0
+
+
+
+def sync_rtc():
+    if os.geteuid() != 0:
+        print("RTC sync requires sudo.")
+        print("Run: sudo aiov2_ctl --sync-rtc")
+        return 1
+
+    if not shutil.which("hwclock"):
+        print("hwclock not found. RTC sync skipped.")
+        return 1
+
+    print("Syncing system time to RTC…")
+    subprocess.call(["hwclock", "-w"])
+    print("RTC updated and synced.")
     return 0
 
 
@@ -682,6 +760,15 @@ def main():
 
     elif arg == "--no-autostart":
         sys.exit(disable_autostart())
+
+    elif arg == "--add-apps":
+        sys.exit(add_apps())
+
+    elif arg == "--remove-apps":
+        sys.exit(remove_apps())
+
+    elif arg == "--sync-rtc":
+        sys.exit(sync_rtc())
 
     elif arg == "--measure":
         if len(sys.argv) < 3:

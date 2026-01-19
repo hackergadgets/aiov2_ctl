@@ -62,7 +62,52 @@ aiov2_ctl --status
 
 ---
 
-## 3) CLI usage
+## 3) Optional: HackerGadgets AIO Companion Apps
+
+This step is **optional** and not required for basic GPIO or GUI usage.
+
+### Install preconfigured AIO apps
+
+```bash
+sudo aiov2_ctl --add-apps
+```
+
+Installs and configures:
+
+- **`hackergadgets-uconsole-aio-board`** — Core AIO v2 integration (GPIO, power rails, RTC support, services, and uConsole-specific configuration)
+- **`meshtastic-mui`** — Meshtastic graphical UI for LoRa / Meshtastic devices (depends on the AIO package)
+- **`sdrpp-brown`** — Preconfigured SDR++ build for the uConsole (RF scanning/listening via SDR)
+- **`tar1090`** — ADS-B aircraft tracking web UI (visualises planes from your SDR feed)
+- **`pygpsclient`** — GPS monitoring and diagnostics GUI (position, satellites, NMEA data)
+
+This pulls in supporting services (RTC, GPIO helpers, and desktop menu entries) used by the HackerGadgets AIO ecosystem.
+
+---
+
+### Remove AIO apps (cleanup / testing)
+
+```bash
+sudo aiov2_ctl --remove-apps
+```
+
+Removes the above packages and runs `apt autoremove`.  
+Useful for testing reinstallation or returning to a minimal setup.
+
+---
+
+### Sync system time to RTC
+
+```bash
+sudo aiov2_ctl --sync-rtc
+```
+
+Writes the **current system time** to the hardware RTC using `hwclock -w`.
+
+> Only run this after confirming system time is correct (e.g. via NTP).
+
+---
+
+## 4) CLI usage
 
 Show current GPIO state:
 
@@ -99,7 +144,7 @@ aiov2_ctl SDR on
 
 ---
 
-## 4) Power monitoring
+## 5) Power monitoring
 
 Live power monitor (Ctrl+C to exit):
 
@@ -115,7 +160,7 @@ aiov2_ctl --watch
 
 ---
 
-## 5) GUI mode (system tray)
+## 6) GUI mode (system tray)
 
 Start the tray-based GUI:
 
@@ -132,7 +177,7 @@ aiov2_ctl --gui
 
 ---
 
-## 6) Autostart GUI on login (recommended)
+## 7) Autostart GUI on login (recommended)
 
 For desktop environments that support **XDG autostart** (LXQt, XFCE, GNOME, etc.), this is handled automatically.
 
@@ -163,7 +208,7 @@ aiov2_ctl --no-autostart
 
 ---
 
-## 7) Updating aiov2_ctl
+## 8) Updating aiov2_ctl
 
 Pull the latest version and reinstall automatically:
 
