@@ -57,6 +57,29 @@ def get_git_branch(repo):
     except subprocess.CalledProcessError:
         return None
 
+BANNER = """
+   db    88  dP"Yb      Yb    dP oP"Yb.
+  dPYb   88 dP   Yb      Yb  dP  "' dP'
+ dP__Yb  88 Yb   dP       YbdP     dP'
+dP\"\"\"\"Yb 88  YbodP         YP    .d8888
+"""
+
+APP_HEADER = f"""{BANNER}
+aiov2_ctl — HackerGadgets uConsole AIOv2 control + telemetry tool
+"""
+
+
+def clear_screen():
+    # Works in SSH, local TTY, tmux
+    os.system("clear")
+
+def draw_header(title=None):
+    clear_screen()
+    print(BANNER)
+    if title:
+        print(f"\n{title}")
+        print("-" * len(title))
+    print()
 
 
 # ==============================
@@ -79,12 +102,71 @@ FEATURE_META = {
 BATTERY_SUPPLY = "axp20x-battery"
 AC_SUPPLY = "axp22x-ac"
 
+
+
+
+
+# ==============================
+# Post-install / Usage tips
+# ==============================
+POST_INSTALL_TIPS = """
+NEXT STEPS / TIPS
+
+Meshtastic
+----------
+An open-source, off-grid, decentralised mesh network for low-power devices.
+
+ • Launch: meshtastic-mui
+ • Set your call sign and country in settings
+ • US users: set Frequency Slot to 20
+ • Map packs go in: /home/USER/.portduino/default/maps
+ • Ensure the LoRa module is powered on (use aiov2_ctl if needed)
+
+SDR++ (Brown)
+-------------
+A lightweight, open-source SDR application.
+
+ • Launch: sdrpp
+ • Select reminding RTL-SDR from Sources (top-left)
+ • Click ▶ Play to start receiving
+
+Audio on Debian Trixie (PipeWire):
+ • Open the left sidebar
+ • Go to Module Manager
+ • Search for: audio
+ • Add: linux_pulseaudio_sink
+ • Open Sinks and select your audio output
+
+tar1090
+-------
+Web interface for ADS-B decoders (readsb / dump1090-fa).
+
+ • tar1090 runs on top of readsb
+ • The SDR can only be used by one app at a time
+ • This setup starts readsb when tar1090 launches and stops it on exit
+
+PyGPSClient
+-----------
+Graphical GPS / GNSS diagnostics tool.
+
+ • Launch: pygpsclient
+ • Initial GPS lock may take time (antenna dependent)
+ • On CM5 select the second serial device
+ • Click the USB/UART icon to connect
+
+General
+-------
+ • A reboot after install is recommended
+"""
+
+
+
 # ==============================
 # Help text
 # ==============================
-HELP_TEXT = f"""
-aiov2_ctl — HackerGadgets uConsole AIOv2 control + telemetry tool
-
+HELP_TEXT = (
+    APP_HEADER
+    + """
 USAGE:
   aiov2_ctl
   aiov2_ctl --status
@@ -100,7 +182,7 @@ USAGE:
   aiov2_ctl --no-autostart
   sudo aiov2_ctl --add-apps
   sudo aiov2_ctl --remove-apps
-  sudo aiov2_ctl  --sync-rt
+  sudo aiov2_ctl --sync-rtc
 
 FEATURES:
   {', '.join(GPIO_MAP.keys())}
@@ -115,7 +197,7 @@ COMMANDS:
   --update     Pull latest version from git and reinstall
   --autostart        Enable GUI autostart on login
   --no-autostart     Disable GUI autostart
-  --add-apps   Install HackerGadgets AIO apps + sync RTC
+  --add-apps   Install HackerGadgets AIO apps
   --sync-rtc   Write current system time to hardware RTC
   --remove-apps   Remove HackerGadgets AIO apps
 
@@ -126,6 +208,11 @@ NOTES:
   • GUI left-click opens status window
   • GUI right-click opens menu
 """
+    + POST_INSTALL_TIPS
+)
+
+
+
 
 # ==============================
 # Autostart (XDG)
@@ -181,7 +268,7 @@ def add_apps():
         print("Run: sudo aiov2_ctl --add-apps")
         return 1
 
-    print("Installing HackerGadgets AIO apps…")
+    draw_header("Installing HackerGadgets AIO applications")
 
     subprocess.check_call(["apt", "update"])
 
@@ -195,11 +282,16 @@ def add_apps():
     subprocess.check_call([
         "apt", "install",
         "meshtastic-mui",
+        "sdrpp-brown",
+        "tar1090",
+        "pygpsclient",
         "-y"
     ])
 
-    print("Useful Apps installed.")
+    print("\nInstallation complete.\n")
+    print(POST_INSTALL_TIPS)
     return 0
+
 
 def remove_apps():
     if os.geteuid() != 0:
@@ -207,11 +299,14 @@ def remove_apps():
         print("Run: sudo aiov2_ctl --remove-apps")
         return 1
 
-    print("Removing HackerGadgets AIO apps…")
+    draw_header("Removing HackerGadgets AIO applications")
 
     subprocess.call([
         "apt", "remove",
         "meshtastic-mui",
+        "sdrpp-brown",
+        "tar1090",
+        "pygpsclient",
         "-y"
     ])
 
@@ -226,7 +321,7 @@ def remove_apps():
         "-y"
     ])
 
-    print("Apps removed.")
+    print("\nApplications removed.")
     return 0
 
 
@@ -633,6 +728,13 @@ def run_gui():
 
 
 def install_self():
+    if os.geteuid() != 0:
+        print("Install requires sudo.")
+        print("Run: sudo aiov2_ctl --install")
+        return 1
+
+    draw_header("Installing aiov2_ctl system-wide")
+
     dst = "/usr/local/bin/aiov2_ctl"
     asset_base = "/usr/local/share/aiov2_ctl"
 
@@ -646,16 +748,9 @@ def install_self():
         req = None
         img_src = None
 
-    if os.geteuid() != 0:
-        print("Install requires sudo.")
-        print("Run: sudo python3 ./aiov2_ctl.py --install")
-        return 1
-
-    # ------------------------------
-    # Install Python requirements
-    # ------------------------------
+    # Python deps
     if req and os.path.exists(req):
-        print("Installing Python dependencies…")
+        print("Installing Python dependencies…\n")
         subprocess.check_call([
             sys.executable,
             "-m", "pip",
@@ -664,64 +759,51 @@ def install_self():
             "-r", req
         ])
     else:
-        print("No requirements.txt found, skipping dependency install.")
+        print("No requirements.txt found, skipping dependencies.\n")
 
-    # ------------------------------
-    # Install script
-    # ------------------------------
-    if os.path.realpath(src) != os.path.realpath(dst):
-        print(f"Installing {src} → {dst}")
-        subprocess.check_call(["cp", src, dst])
-        subprocess.check_call(["chmod", "+x", dst])
-    else:
-        print("Script already installed.")
+    # Install binary
+    print(f"Installing executable → {dst}\n")
+    subprocess.check_call(["cp", src, dst])
+    subprocess.check_call(["chmod", "+x", dst])
 
-    # ------------------------------
-    # Install assets (icons, etc.)
-    # ------------------------------
+    # Assets
     if img_src and os.path.isdir(img_src):
-        print(f"Installing assets → {asset_base}")
+        print(f"Installing assets → {asset_base}\n")
         subprocess.check_call(["mkdir", "-p", asset_base])
-        subprocess.check_call([
-            "cp", "-r",
-            img_src,
-            asset_base
-        ])
+        subprocess.check_call(["cp", "-r", img_src, asset_base])
     else:
-        print("No img/ directory found, skipping asset install.")
+        print("No assets found, skipping.\n")
 
     print("Install complete.")
     return 0
 
-
 def update_self():
-    # NEVER run git as root
     if os.geteuid() == 0:
         print("Do not run --update with sudo.")
         print("Run: aiov2_ctl --update")
         return 1
 
+    draw_header("Updating aiov2_ctl")
+
     repo = get_git_root()
     if not repo:
-        print("Not inside a git repository. Cannot update.")
+        print("Not inside a git repository.")
         return 1
 
-    branch = get_git_branch(repo)
-    if not branch:
-        print("Could not determine git branch.")
-        return 1
-
-    print(f"Updating from git ({branch})…")
+    branch = get_git_branch(repo) or "unknown"
+    print(f"Current branch: {branch}\n")
+    print("Pulling latest changes…\n")
 
     if not run_cmd(["git", "pull", "--ff-only"], cwd=repo):
         print("Git pull failed. Resolve manually.")
         return 1
 
-    print("Reinstalling updated version…")
+    print("\nReinstalling updated version…\n")
 
-    # Escalate ONLY for install
+    # escalate only for install
     rerun_with_sudo(["--install"])
     return 0
+
 
 # ==============================
 # Entrypoint
