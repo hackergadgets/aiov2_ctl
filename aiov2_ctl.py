@@ -4,7 +4,7 @@ import os
 import subprocess
 import time
 import json
-from statistics import mean, pstdev
+from statistics import mean
 
 # ==============================
 # Configuration
@@ -34,6 +34,7 @@ aiov2_ctl — HackerGadgets uConsole AIOv2 control + telemetry tool
 
 USAGE:
   aiov2_ctl
+  aiov2_ctl --status
   aiov2_ctl --power
   aiov2_ctl --watch
   aiov2_ctl --gui
@@ -47,6 +48,7 @@ FEATURES:
 NOTES:
   • Battery power is the truth source
   • <0.05 W deltas are below noise floor
+  • --status is a one-shot snapshot
   • GUI left-click opens status window
   • Right-click opens menu
 """
@@ -64,7 +66,13 @@ class GpioController:
 
     @staticmethod
     def set_gpio(pin, state):
-        subprocess.call(["pinctrl", "set", str(pin), "op", "dh" if state else "dl"])
+        subprocess.call([
+            "pinctrl",
+            "set",
+            str(pin),
+            "op",
+            "dh" if state else "dl",
+        ])
 
     @staticmethod
     def get_gpio(pin):
@@ -85,13 +93,17 @@ class Telemetry:
 
     @staticmethod
     def ac_online():
-        v = Telemetry._read_int(f"/sys/class/power_supply/{AC_SUPPLY}/online")
+        v = Telemetry._read_int(
+            f"/sys/class/power_supply/{AC_SUPPLY}/online"
+        )
         return bool(v) if v is not None else None
 
     @staticmethod
     def battery_status():
         try:
-            with open(f"/sys/class/power_supply/{BATTERY_SUPPLY}/status") as f:
+            with open(
+                f"/sys/class/power_supply/{BATTERY_SUPPLY}/status"
+            ) as f:
                 return f.read().strip()
         except Exception:
             return None
@@ -158,6 +170,33 @@ class Telemetry:
             "current": round(abs(cur), 2),
             "power": round(abs(viw["power"]), 2),
         }
+
+# ==============================
+# Status (snapshot)
+# ==============================
+def show_status():
+    print("AIO v2 Status")
+    print("====================")
+
+    for f, p in GPIO_MAP.items():
+        state = "ON" if GpioController.get_gpio(p) else "OFF"
+        print(f"{f:<5} GPIO{p}: {state}")
+
+    print("--------------------")
+
+    summary = Telemetry.power_summary()
+    if not summary:
+        print("Power: n/a")
+        return
+
+    print(f"Source    : {summary['source']}")
+    print(f"Status    : {summary['status']}")
+    print(f"Capacity  : {summary['capacity']}%")
+    print(f"Direction : {summary['direction']}")
+    print(f"Mode      : {summary['mode']}")
+    print(f"Voltage   : {summary['voltage']} V")
+    print(f"Current   : {summary['current']} A")
+    print(f"Power     : {summary['power']} W")
 
 # ==============================
 # Sampling / Measurement
@@ -306,7 +345,7 @@ def run_gui():
 
     menu = QMenu()
     actions = {}
-    for f, p in GPIO_MAP.items():
+    for f in GPIO_MAP:
         a = QAction(f)
         a.setCheckable(True)
         a.triggered.connect(lambda c, f=f: GpioController.set_gpio(GPIO_MAP[f], c))
@@ -385,6 +424,8 @@ def main():
 
     if arg in ("--help", "-h"):
         print(HELP_TEXT)
+    elif arg == "--status":
+        show_status()
     elif arg == "--power":
         show_power_live()
     elif arg == "--watch":
