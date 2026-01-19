@@ -95,6 +95,8 @@ USAGE:
   aiov2_ctl --install
   aiov2_ctl --update
   aiov2_ctl --help
+  aiov2_ctl --autostart
+  aiov2_ctl --no-autostart
 
 FEATURES:
   {', '.join(GPIO_MAP.keys())}
@@ -107,6 +109,8 @@ COMMANDS:
   --measure    Measure power delta of a feature
   --install    Install tool to /usr/local/bin
   --update     Pull latest version from git and reinstall
+  --autostart        Enable GUI autostart on login
+  --no-autostart     Disable GUI autostart
 
 NOTES:
   • Battery power is the truth source
@@ -115,6 +119,56 @@ NOTES:
   • GUI left-click opens status window
   • GUI right-click opens menu
 """
+
+# ==============================
+# Autostart (XDG)
+# ==============================
+AUTOSTART_DESKTOP = """[Desktop Entry]
+Type=Application
+Name=AIO v2 Controller
+Comment=GPIO tray controller
+Exec=/usr/local/bin/aiov2_ctl --gui
+Icon=utilities-system-monitor
+Terminal=false
+X-GNOME-Autostart-enabled=true
+XDG_AUTOSTART_DELAY=5
+"""
+
+def autostart_path():
+    return os.path.expanduser("~/.config/autostart/aiov2_ctl.desktop")
+
+def enable_autostart():
+    if os.geteuid() == 0:
+        print("Do not run --autostart as root.")
+        return 1
+
+    path = autostart_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    if os.path.exists(path):
+        print("Autostart already enabled.")
+        return 0
+
+    with open(path, "w") as f:
+        f.write(AUTOSTART_DESKTOP)
+
+    print(f"Autostart enabled: {path}")
+    return 0
+
+def disable_autostart():
+    if os.geteuid() == 0:
+        print("Do not run --no-autostart as root.")
+        return 1
+
+    path = autostart_path()
+    if os.path.exists(path):
+        os.remove(path)
+        print("Autostart disabled.")
+    else:
+        print("Autostart already disabled.")
+
+    return 0
+
 
 # ==============================
 # GPIO Helpers
@@ -566,6 +620,12 @@ def main():
 
     elif arg == "--gui":
         run_gui()
+
+    elif arg == "--autostart":
+        sys.exit(enable_autostart())
+
+    elif arg == "--no-autostart":
+        sys.exit(disable_autostart())
 
     elif arg == "--measure":
         if len(sys.argv) < 3:
