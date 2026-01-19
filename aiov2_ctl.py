@@ -128,7 +128,6 @@ Type=Application
 Name=AIO v2 Controller
 Comment=GPIO tray controller
 Exec=/usr/bin/python3 /usr/local/bin/aiov2_ctl --gui
-Icon=utilities-system-monitor
 Terminal=false
 X-GNOME-Autostart-enabled=true
 XDG_AUTOSTART_DELAY=5
@@ -446,14 +445,34 @@ def run_gui():
         QWidget, QVBoxLayout, QLabel, QCheckBox
     )
     from PyQt6.QtGui import QAction, QIcon, QCursor
-    from PyQt6.QtCore import Qt, QTimer
+    from PyQt6.QtCore import Qt, QTimer, QSharedMemory
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setDesktopFileName("aiov2_ctl")
 
-    tray = QSystemTrayIcon(QIcon.fromTheme("utilities-system-monitor"))
-    tray.setToolTip("AIO v2 Controller")
+    shared = QSharedMemory("aiov2_ctl_gui")
+    if not shared.create(1):
+        print("AIOv2 GUI already running.")
+        return
+
+    tray = QSystemTrayIcon()
+
+    # 1) Prefer installed PCB icon (system-wide asset path)
+    icon = QIcon("/usr/local/share/aiov2_ctl/img/pcb-board.png")
+
+    # 2) Fallback to desktop theme icon (same as autostart)
+    if icon.isNull():
+        icon = QIcon.fromTheme("utilities-system-monitor")
+
+    # 3) Absolute last-resort Qt fallback
+    if icon.isNull():
+        icon = app.style().standardIcon(
+            app.style().StandardPixmap.SP_ComputerIcon
+        )
+
+    tray.setIcon(icon)
+    tray.setToolTip("AIOv2 Tools")
 
     # -------- Right-click menu --------
     menu = QMenu()
@@ -537,21 +556,26 @@ def run_gui():
 
 def install_self():
     dst = "/usr/local/bin/aiov2_ctl"
+    asset_base = "/usr/local/share/aiov2_ctl"
 
     repo = get_git_root()
     if repo:
         src = os.path.join(repo, "aiov2_ctl.py")
         req = os.path.join(repo, "requirements.txt")
+        img_src = os.path.join(repo, "img")
     else:
         src = os.path.realpath(__file__)
         req = None
+        img_src = None
 
     if os.geteuid() != 0:
         print("Install requires sudo.")
         print("Run: sudo python3 ./aiov2_ctl.py --install")
         return 1
 
-    # Install Python requirements (if available)
+    # ------------------------------
+    # Install Python requirements
+    # ------------------------------
     if req and os.path.exists(req):
         print("Installing Python dependencies…")
         subprocess.check_call([
@@ -564,17 +588,33 @@ def install_self():
     else:
         print("No requirements.txt found, skipping dependency install.")
 
+    # ------------------------------
     # Install script
-    if os.path.realpath(src) == os.path.realpath(dst):
-        print("Already installed.")
-        return 0
+    # ------------------------------
+    if os.path.realpath(src) != os.path.realpath(dst):
+        print(f"Installing {src} → {dst}")
+        subprocess.check_call(["cp", src, dst])
+        subprocess.check_call(["chmod", "+x", dst])
+    else:
+        print("Script already installed.")
 
-    print(f"Installing {src} → {dst}")
-    subprocess.check_call(["cp", src, dst])
-    subprocess.check_call(["chmod", "+x", dst])
+    # ------------------------------
+    # Install assets (icons, etc.)
+    # ------------------------------
+    if img_src and os.path.isdir(img_src):
+        print(f"Installing assets → {asset_base}")
+        subprocess.check_call(["mkdir", "-p", asset_base])
+        subprocess.check_call([
+            "cp", "-r",
+            img_src,
+            asset_base
+        ])
+    else:
+        print("No img/ directory found, skipping asset install.")
 
     print("Install complete.")
     return 0
+
 
 def update_self():
     # NEVER run git as root
