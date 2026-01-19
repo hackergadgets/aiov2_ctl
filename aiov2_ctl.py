@@ -326,29 +326,28 @@ def run_gui():
 
     from PyQt6.QtWidgets import (
         QApplication, QSystemTrayIcon, QMenu,
-        QWidget, QVBoxLayout, QLabel
+        QWidget, QVBoxLayout, QLabel, QCheckBox
     )
     from PyQt6.QtGui import QAction, QIcon, QCursor
     from PyQt6.QtCore import Qt, QTimer
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    app.setDesktopFileName("aiov2_ctl")
 
     tray = QSystemTrayIcon(QIcon.fromTheme("utilities-system-monitor"))
     tray.setToolTip("AIO v2 Controller")
 
-    dummy = QWidget()
-    dummy.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
-    dummy.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    dummy.setWindowOpacity(0)
-    dummy.resize(1, 1)
-
+    # -------- Right-click menu --------
     menu = QMenu()
     actions = {}
+
     for f in GPIO_MAP:
         a = QAction(f)
         a.setCheckable(True)
-        a.triggered.connect(lambda c, f=f: GpioController.set_gpio(GPIO_MAP[f], c))
+        a.triggered.connect(
+            lambda checked, f=f: GpioController.set_gpio(GPIO_MAP[f], checked)
+        )
         menu.addAction(a)
         actions[f] = a
 
@@ -361,6 +360,7 @@ def run_gui():
     menu.addAction("Quit", app.quit)
     tray.setContextMenu(menu)
 
+    # -------- Left-click window --------
     window = QWidget()
     window.setWindowTitle("AIO v2 Status")
     window.setWindowFlags(Qt.WindowType.Tool)
@@ -369,15 +369,17 @@ def run_gui():
     power_label = QLabel("Power: -- W")
     layout.addWidget(power_label)
 
-    labels = {}
+    checkboxes = {}
     for f in GPIO_MAP:
-        lbl = QLabel()
-        layout.addWidget(lbl)
-        labels[f] = lbl
+        cb = QCheckBox(f)
+        cb.toggled.connect(
+            lambda checked, f=f: GpioController.set_gpio(GPIO_MAP[f], checked)
+        )
+        layout.addWidget(cb)
+        checkboxes[f] = cb
 
     def refresh():
         summary = Telemetry.power_summary()
-
         if summary:
             power_label.setText(
                 f"{summary['mode']} | {summary['power']} W | {summary['capacity']}%"
@@ -389,15 +391,19 @@ def run_gui():
 
         for f, p in GPIO_MAP.items():
             state = GpioController.get_gpio(p)
-            labels[f].setText(f"{f}: {'ON' if state else 'OFF'}")
+
+            checkboxes[f].blockSignals(True)
+            checkboxes[f].setChecked(state)
+            checkboxes[f].blockSignals(False)
+
+            actions[f].blockSignals(True)
             actions[f].setChecked(state)
+            actions[f].blockSignals(False)
 
     def on_activate(reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            dummy.move(QCursor.pos())
-            dummy.show()
-            dummy.activateWindow()
             refresh()
+            window.move(QCursor.pos())
             window.show()
             window.raise_()
             window.activateWindow()
