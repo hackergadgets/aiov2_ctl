@@ -68,6 +68,54 @@ APP_HEADER = f"""{BANNER}
 aiov2_ctl — HackerGadgets uConsole AIOv2 control + telemetry tool
 """
 
+BASH_COMPLETION = r"""# Bash completion for aiov2_ctl
+
+_aiov2_ctl()
+{
+    local cur prev opts features
+
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    opts="
+        --help
+        --status
+        --power
+        --watch
+        --gui
+        --measure
+        --install
+        --update
+        --autostart
+        --no-autostart
+        --add-apps
+        --remove-apps
+        --sync-rtc
+    "
+
+    features="GPS LORA SDR USB"
+
+    if [[ ${COMP_CWORD} -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "${opts} ${features}" -- "${cur}") )
+        return 0
+    fi
+
+    if [[ "${prev}" =~ ^(GPS|LORA|SDR|USB)$ ]]; then
+        COMPREPLY=( $(compgen -W "on off" -- "${cur}") )
+        return 0
+    fi
+
+    if [[ "${prev}" == "--measure" ]]; then
+        COMPREPLY=( $(compgen -W "${features}" -- "${cur}") )
+        return 0
+    fi
+}
+
+complete -F _aiov2_ctl aiov2_ctl
+"""
+
+
 
 def clear_screen():
     # Works in SSH, local TTY, tmux
@@ -737,6 +785,7 @@ def install_self():
 
     dst = "/usr/local/bin/aiov2_ctl"
     asset_base = "/usr/local/share/aiov2_ctl"
+    completion_path = "/etc/bash_completion.d/aiov2_ctl"
 
     repo = get_git_root()
     if repo:
@@ -748,7 +797,9 @@ def install_self():
         req = None
         img_src = None
 
-    # Python deps
+    # ------------------------------
+    # Python dependencies
+    # ------------------------------
     if req and os.path.exists(req):
         print("Installing Python dependencies…\n")
         subprocess.check_call([
@@ -761,18 +812,35 @@ def install_self():
     else:
         print("No requirements.txt found, skipping dependencies.\n")
 
-    # Install binary
+    # ------------------------------
+    # Install executable
+    # ------------------------------
     print(f"Installing executable → {dst}\n")
     subprocess.check_call(["cp", src, dst])
     subprocess.check_call(["chmod", "+x", dst])
 
-    # Assets
+    # ------------------------------
+    # Install assets (icons, etc.)
+    # ------------------------------
     if img_src and os.path.isdir(img_src):
         print(f"Installing assets → {asset_base}\n")
         subprocess.check_call(["mkdir", "-p", asset_base])
         subprocess.check_call(["cp", "-r", img_src, asset_base])
     else:
         print("No assets found, skipping.\n")
+
+    # ------------------------------
+    # Install bash completion
+    # ------------------------------
+    print("Installing bash completion…\n")
+    with open(completion_path, "w") as f:
+        f.write(BASH_COMPLETION)
+
+    os.chmod(completion_path, 0o644)
+
+    print("Bash completion installed.")
+    print("Open a new shell or run:")
+    print("  source /etc/bash_completion\n")
 
     print("Install complete.")
     return 0
