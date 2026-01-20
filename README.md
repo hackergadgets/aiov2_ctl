@@ -1,37 +1,234 @@
 # aiov2_ctl
-This is a client for power management of the aiov2.
 
-## Usage:
-**Prepration**
+A lightweight **power and feature control client** for the HackerGadgets **AIO v2** board (GPIO-based fork).
 
-Intatll the package for GUI mode.
+This tool controls onboard hardware (GPS, LoRa, SDR, USB power rails) via **direct GPIO access using `pinctrl`**, and supports both **CLI** and **system tray GUI** modes.
 
-`sudo apt install python3-pyqt6`
+---
 
-**View all feature status**
+## What this tool does
 
-`python aiov2_ctl.py` 
+`aiov2_ctl` directly toggles GPIO pins mapped to hardware enable lines in order to:
 
-**Set feature switch**              
+- Enable / disable onboard hardware modules
+- Query current on/off state
+- Monitor overall board power usage
+- Provide a tray-based GUI for quick toggling
+- Optionally auto-start the GUI on login (XDG desktops)
 
-`python aiov2_ctl.py <feature> <on/off>`
+---
 
-**Features:**  GPS, LORA, SDR, USB
+## Requirements
 
-**Examples:**
+- HackerGadgets uConsole **AIO v2 Upgrade Kit**  
+  https://hackergadgets.com/products/uconsole-upgrade-kit?variant=47038702682286
+- uConsole running **Debian / Raspberry Pi OS** (Bookworm or Trixie recommended)
+- Python **3.9+**
+- `pinctrl` available on the system (used for direct GPIO control)
+- Desktop environment with system tray support (for GUI mode)
 
-Turn ON GPS
-  
-`python aiov2_ctl.py GPS on` 
-  
-Turn OFF LoRa
+---
 
-`python aiov2_ctl.py LORA off`
+## 1) System dependencies
 
-**Start System Tray GUI**
+Install required system packages:
 
-`python aiov2_ctl.py --gui`
+```bash
+sudo apt update
+sudo apt install -y python3 python3-pip python3-pyqt6 git
+```
 
-After running the command, a system tray icon will show on the task bar. Right click the icon, a menu will popup. Click on the item to turn it on/off.
+---
 
-![](img/system_tray.png)
+## 2) Install aiov2_ctl (system-wide)
+
+The recommended install location is `/usr/local/bin`.
+
+Clone the repository anywhere (e.g. your home directory), then install:
+
+```bash
+git clone https://github.com/hackergadgets/aiov2_ctl.git
+cd aiov2_ctl
+
+sudo python3 ./aiov2_ctl.py --install
+```
+
+Sanity check:
+
+```bash
+aiov2_ctl
+aiov2_ctl --status
+```
+
+---
+
+## 3) Optional: HackerGadgets AIO Companion Apps
+
+This step is **optional** and not required for basic GPIO or GUI usage.
+
+### Install preconfigured AIO apps
+
+```bash
+sudo aiov2_ctl --add-apps
+```
+
+Installs and configures:
+
+- **`hackergadgets-uconsole-aio-board`** — Core AIO v2 integration (GPIO, power rails, RTC support, services, and uConsole-specific configuration)
+- **`meshtastic-mui`** — Meshtastic graphical UI for LoRa / Meshtastic devices (depends on the AIO package)
+- **`sdrpp-brown`** — Preconfigured SDR++ build for the uConsole (RF scanning/listening via SDR)
+- **`tar1090`** — ADS-B aircraft tracking web UI (visualises planes from your SDR feed)
+- **`pygpsclient`** — GPS monitoring and diagnostics GUI (position, satellites, NMEA data)
+
+This pulls in supporting services (RTC, GPIO helpers, and desktop menu entries) used by the HackerGadgets AIO ecosystem.
+
+---
+
+### Remove AIO apps (cleanup / testing)
+
+```bash
+sudo aiov2_ctl --remove-apps
+```
+
+Removes the above packages and runs `apt autoremove`.  
+Useful for testing reinstallation or returning to a minimal setup.
+
+---
+
+### Sync system time to RTC
+
+```bash
+sudo aiov2_ctl --sync-rtc
+```
+
+Writes the **current system time** to the hardware RTC using `hwclock -w`.
+
+> Only run this after confirming system time is correct (e.g. via NTP).
+
+---
+
+## 4) CLI usage
+
+Show current GPIO state:
+
+```bash
+aiov2_ctl
+```
+
+Show detailed status (including battery / power rail info):
+
+```bash
+aiov2_ctl --status
+```
+
+Enable or disable a feature:
+
+```bash
+aiov2_ctl <FEATURE> <on|off>
+```
+
+Supported features:
+
+- `GPS`
+- `LORA`
+- `SDR`
+- `USB`
+
+Examples:
+
+```bash
+aiov2_ctl GPS on
+aiov2_ctl LORA off
+aiov2_ctl SDR on
+```
+
+---
+
+## 5) Power monitoring
+
+Live power monitor (Ctrl+C to exit):
+
+```bash
+aiov2_ctl --power
+```
+
+Compact live GPIO + power line (single-line view):
+
+```bash
+aiov2_ctl --watch
+```
+
+---
+
+## 6) GUI mode (system tray)
+
+Start the tray-based GUI:
+
+```bash
+aiov2_ctl --gui
+```
+
+### Behaviour
+
+- **Left-click**: opens a small status window (Wayland-safe)
+- **Right-click**: opens tray menu to toggle hardware
+- Power usage is updated once per second
+- GUI must **not** be run as root
+
+---
+
+## 7) Autostart GUI on login (recommended)
+
+For desktop environments that support **XDG autostart** (LXQt, XFCE, GNOME, etc.), this is handled automatically.
+
+### Enable autostart
+
+```bash
+aiov2_ctl --autostart
+```
+
+Creates:
+
+```
+~/.config/autostart/aiov2_ctl.desktop
+```
+
+### Disable autostart
+
+```bash
+aiov2_ctl --no-autostart
+```
+
+### Notes
+
+- Autostart is **per-user**, not system-wide
+- Never run autostart commands as root
+- Uses `/usr/local/bin/aiov2_ctl --gui`
+- Includes a small startup delay to allow GPIO and desktop services to settle
+
+---
+
+## 8) Updating aiov2_ctl
+
+Pull the latest version and reinstall automatically:
+
+```bash
+aiov2_ctl --update
+```
+
+Behaviour:
+
+- Git operations are **never** run as root
+- The tool escalates **only** for the install step
+- Clean exit if already up to date
+
+---
+
+## Safety notes
+
+- GPIO writes happen immediately
+- Assumes exclusive control of AIO v2 GPIO pins
+- Battery telemetry comes directly from kernel `power_supply`
+- Power deltas below **~0.05 W** are considered noise
+
+Maintained for **HackerGadgets uConsole AIO v2** users.

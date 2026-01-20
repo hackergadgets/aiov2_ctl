@@ -1,214 +1,944 @@
+#!/usr/bin/env python3
 import sys
 import os
 import subprocess
+import time
+import json
+import shutil
+from statistics import mean
 
+def rerun_with_sudo(extra_args=None):
+    cmd = ["sudo", sys.executable, os.path.realpath(__file__)]
+    if extra_args:
+        cmd += extra_args
+    else:
+        cmd += sys.argv[1:]
+
+    os.execvp("sudo", cmd)
+
+
+def run_cmd(cmd, cwd=None):
+    try:
+        subprocess.check_call(cmd, cwd=cwd)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+def git_pull(repo):
+    try:
+        out = subprocess.check_output(
+            ["git", "pull", "--ff-only"],
+            cwd=repo,
+            stderr=subprocess.STDOUT,
+            text=True
+        ).strip()
+        return out
+    except subprocess.CalledProcessError as e:
+        return None
+
+def get_git_root():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            stderr=subprocess.DEVNULL,
+            text=True
+        ).strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+def get_git_branch(repo):
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo,
+            text=True
+        ).strip()
+    except subprocess.CalledProcessError:
+        return None
+
+BANNER = """
+   db    88  dP"Yb      Yb    dP oP"Yb.
+  dPYb   88 dP   Yb      Yb  dP  "' dP'
+ dP__Yb  88 Yb   dP       YbdP     dP'
+dP\"\"\"\"Yb 88  YbodP         YP    .d8888
+"""
+
+APP_HEADER = f"""{BANNER}
+aiov2_ctl — HackerGadgets uConsole AIOv2 control + telemetry tool
+"""
+
+BASH_COMPLETION = r"""# Bash completion for aiov2_ctl
+
+_aiov2_ctl()
+{
+    local cur prev opts features
+
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    opts="
+        --help
+        --status
+        --power
+        --watch
+        --gui
+        --measure
+        --install
+        --update
+        --autostart
+        --no-autostart
+        --add-apps
+        --remove-apps
+        --sync-rtc
+    "
+
+    features="GPS LORA SDR USB"
+
+    if [[ ${COMP_CWORD} -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "${opts} ${features}" -- "${cur}") )
+        return 0
+    fi
+
+    if [[ "${prev}" =~ ^(GPS|LORA|SDR|USB)$ ]]; then
+        COMPREPLY=( $(compgen -W "on off" -- "${cur}") )
+        return 0
+    fi
+
+    if [[ "${prev}" == "--measure" ]]; then
+        COMPREPLY=( $(compgen -W "${features}" -- "${cur}") )
+        return 0
+    fi
+}
+
+complete -F _aiov2_ctl aiov2_ctl
+"""
+
+
+
+def clear_screen():
+    # Works in SSH, local TTY, tmux
+    os.system("clear")
+
+def draw_header(title=None):
+    clear_screen()
+    print(BANNER)
+    if title:
+        print(f"\n{title}")
+        print("-" * len(title))
+    print()
+
+
+# ==============================
 # Configuration
-# GPIO Pin Definitions
+# ==============================
 GPIO_MAP = {
     "GPS": 27,
     "LORA": 16,
     "SDR": 7,
-    "USB": 23
+    "USB": 23,
 }
 
+FEATURE_META = {
+    "GPS":  {"device": "/dev/ttyAMA0", "type": "serial"},
+    "LORA": {"type": "spi"},
+    "SDR":  {"type": "usb"},
+    "USB":  {"type": "usb"},
+}
+
+BATTERY_SUPPLY = "axp20x-battery"
+AC_SUPPLY = "axp22x-ac"
+
+
+
+
+
+# ==============================
+# Post-install / Usage tips
+# ==============================
+POST_INSTALL_TIPS = """
+NEXT STEPS / TIPS
+
+Meshtastic
+----------
+An open-source, off-grid, decentralised mesh network for low-power devices.
+
+ • Launch: meshtastic-mui
+ • Set your call sign and country in settings
+ • US users: set Frequency Slot to 20
+ • Map packs go in: /home/USER/.portduino/default/maps
+ • Ensure the LoRa module is powered on (use aiov2_ctl if needed)
+
+SDR++ (Brown)
+-------------
+A lightweight, open-source SDR application.
+
+ • Launch: sdrpp
+ • Select reminding RTL-SDR from Sources (top-left)
+ • Click ▶ Play to start receiving
+
+Audio on Debian Trixie (PipeWire):
+ • Open the left sidebar
+ • Go to Module Manager
+ • Search for: audio
+ • Add: linux_pulseaudio_sink
+ • Open Sinks and select your audio output
+
+tar1090
+-------
+Web interface for ADS-B decoders (readsb / dump1090-fa).
+
+ • tar1090 runs on top of readsb
+ • The SDR can only be used by one app at a time
+ • This setup starts readsb when tar1090 launches and stops it on exit
+
+PyGPSClient
+-----------
+Graphical GPS / GNSS diagnostics tool.
+
+ • Launch: pygpsclient
+ • Initial GPS lock may take time (antenna dependent)
+ • On CM5 select the second serial device
+ • Click the USB/UART icon to connect
+
+General
+-------
+ • A reboot after install is recommended
+"""
+
+
+
+# ==============================
+# Help text
+# ==============================
+HELP_TEXT = (
+    APP_HEADER
+    + """
+USAGE:
+  aiov2_ctl
+  aiov2_ctl --status
+  aiov2_ctl --power
+  aiov2_ctl --watch
+  aiov2_ctl --gui
+  aiov2_ctl --measure <FEATURE> [--seconds N] [--interval S] [--settle S]
+  aiov2_ctl <FEATURE> on|off
+  aiov2_ctl --install
+  aiov2_ctl --update
+  aiov2_ctl --help
+  aiov2_ctl --autostart
+  aiov2_ctl --no-autostart
+  sudo aiov2_ctl --add-apps
+  sudo aiov2_ctl --remove-apps
+  sudo aiov2_ctl --sync-rtc
+
+FEATURES:
+  {', '.join(GPIO_MAP.keys())}
+
+COMMANDS:
+  --status     One-shot system + battery snapshot
+  --power      Live power monitor (Ctrl+C to exit)
+  --watch      Compact live GPIO + power line
+  --gui        System tray controller
+  --measure    Measure power delta of a feature
+  --install    Install tool to /usr/local/bin
+  --update     Pull latest version from git and reinstall
+  --autostart        Enable GUI autostart on login
+  --no-autostart     Disable GUI autostart
+  --add-apps   Install HackerGadgets AIO apps
+  --sync-rtc   Write current system time to hardware RTC
+  --remove-apps   Remove HackerGadgets AIO apps
+
+NOTES:
+  • Battery power is the truth source
+  • <0.05 W deltas are below noise floor
+  • --status is a one-shot snapshot
+  • GUI left-click opens status window
+  • GUI right-click opens menu
+"""
+    + POST_INSTALL_TIPS
+)
+
+
+
+
+# ==============================
+# Autostart (XDG)
+# ==============================
+AUTOSTART_DESKTOP = """[Desktop Entry]
+Type=Application
+Name=AIO v2 Controller
+Comment=GPIO tray controller
+Exec=/usr/bin/python3 /usr/local/bin/aiov2_ctl --gui
+Terminal=false
+X-GNOME-Autostart-enabled=true
+XDG_AUTOSTART_DELAY=5
+"""
+
+def autostart_path():
+    return os.path.expanduser("~/.config/autostart/aiov2_ctl.desktop")
+
+def enable_autostart():
+    if os.geteuid() == 0:
+        print("Do not run --autostart as root.")
+        return 1
+
+    path = autostart_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    if os.path.exists(path):
+        print("Autostart already enabled.")
+        return 0
+
+    with open(path, "w") as f:
+        f.write(AUTOSTART_DESKTOP)
+
+    print(f"Autostart enabled: {path}")
+    return 0
+
+def disable_autostart():
+    if os.geteuid() == 0:
+        print("Do not run --no-autostart as root.")
+        return 1
+
+    path = autostart_path()
+    if os.path.exists(path):
+        os.remove(path)
+        print("Autostart disabled.")
+    else:
+        print("Autostart already disabled.")
+
+    return 0
+
+def add_apps():
+    if os.geteuid() != 0:
+        print("This command requires sudo.")
+        print("Run: sudo aiov2_ctl --add-apps")
+        return 1
+
+    draw_header("Installing HackerGadgets AIO applications")
+
+    subprocess.check_call(["apt", "update"])
+
+    subprocess.check_call([
+        "apt", "--install-recommends",
+        "install",
+        "hackergadgets-uconsole-aio-board",
+        "-y"
+    ])
+
+    subprocess.check_call([
+        "apt", "install",
+        "meshtastic-mui",
+        "sdrpp-brown",
+        "tar1090",
+        "pygpsclient",
+        "-y"
+    ])
+
+    print("\nInstallation complete.\n")
+    print(POST_INSTALL_TIPS)
+    return 0
+
+
+def remove_apps():
+    if os.geteuid() != 0:
+        print("This command requires sudo.")
+        print("Run: sudo aiov2_ctl --remove-apps")
+        return 1
+
+    draw_header("Removing HackerGadgets AIO applications")
+
+    subprocess.call([
+        "apt", "remove",
+        "meshtastic-mui",
+        "sdrpp-brown",
+        "tar1090",
+        "pygpsclient",
+        "-y"
+    ])
+
+    subprocess.call([
+        "apt", "remove",
+        "hackergadgets-uconsole-aio-board",
+        "-y"
+    ])
+
+    subprocess.call([
+        "apt", "autoremove",
+        "-y"
+    ])
+
+    print("\nApplications removed.")
+    return 0
+
+
+
+def sync_rtc():
+    if os.geteuid() != 0:
+        print("RTC sync requires sudo.")
+        print("Run: sudo aiov2_ctl --sync-rtc")
+        return 1
+
+    if not shutil.which("hwclock"):
+        print("hwclock not found. RTC sync skipped.")
+        return 1
+
+    print("Syncing system time to RTC…")
+    subprocess.call(["hwclock", "-w"])
+    print("RTC updated and synced.")
+    return 0
+
+
+# ==============================
+# GPIO Helpers
+# ==============================
 class GpioController:
-    """Handle GPIO control logic"""
-    
     @staticmethod
-    def run_command(cmd):
-        """Run shell command and return output"""
+    def run(cmd):
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            return result.stdout.strip()
-        except subprocess.CalledProcessError as e:
-            # In non-Raspberry Pi environments or when command fails, might need silent handling or logging
-            # print(f"Run command error {' '.join(cmd)}: {e}")
-            return None
-        except Exception as e:
-            print(f"Unknown error: {e}")
+            return subprocess.check_output(cmd, text=True).strip()
+        except Exception:
             return None
 
     @staticmethod
     def set_gpio(pin, state):
-        """Set GPIO pin state (True for High/ON, False for Low/OFF)"""
-        op = "dh" if state else "dl"
-        cmd = ["pinctrl", "set", str(pin), "op", op]
-        GpioController.run_command(cmd)
-        state_str = "ON" if state else "OFF"
-        print(f"GPIO {pin} set to {state_str}")
+        subprocess.call([
+            "pinctrl",
+            "set",
+            str(pin),
+            "op",
+            "dh" if state else "dl",
+        ])
 
     @staticmethod
-    def get_gpio_status(pin):
-        """Get GPIO pin status. Returns True for High, False for Low"""
-        cmd = ["pinctrl", "get", str(pin)]
-        output = GpioController.run_command(cmd)
-        if output:
-            # Output usually contains "hi" or "lo"
-            if "hi" in output:
-                return True
-            elif "lo" in output:
-                return False
-        return False
+    def get_gpio(pin):
+        out = GpioController.run(["pinctrl", "get", str(pin)])
+        return bool(out and "hi" in out)
+
+# ==============================
+# Telemetry
+# ==============================
+class Telemetry:
+    @staticmethod
+    def _read_int(path):
+        try:
+            with open(path) as f:
+                return int(f.read().strip())
+        except Exception:
+            return None
 
     @staticmethod
-    def show_all_status():
-        """Show status of all features"""
-        print("Current Feature Status:")
-        print("==========================")
-        for feature, pin in GPIO_MAP.items():
-            is_on = GpioController.get_gpio_status(pin)
-            status_str = "ON" if is_on else "OFF"
-            print(f"{feature:<5} (GPIO{pin}): {status_str}")
-        print("==========================")
+    def ac_online():
+        v = Telemetry._read_int(
+            f"/sys/class/power_supply/{AC_SUPPLY}/online"
+        )
+        return bool(v) if v is not None else None
 
-def run_gui():
-    """Run System Tray GUI"""
+    @staticmethod
+    def battery_status():
+        try:
+            with open(
+                f"/sys/class/power_supply/{BATTERY_SUPPLY}/status"
+            ) as f:
+                return f.read().strip()
+        except Exception:
+            return None
+
+    @staticmethod
+    def battery_capacity():
+        return Telemetry._read_int(
+            f"/sys/class/power_supply/{BATTERY_SUPPLY}/capacity"
+        )
+
+    @staticmethod
+    def battery_v_i_w():
+        v = Telemetry._read_int(
+            f"/sys/class/power_supply/{BATTERY_SUPPLY}/voltage_now"
+        )
+        i = Telemetry._read_int(
+            f"/sys/class/power_supply/{BATTERY_SUPPLY}/current_now"
+        )
+        if v is None or i is None:
+            return None
+
+        v /= 1e6
+        i /= 1e6
+
+        return {
+            "voltage": round(v, 2),
+            "current": round(i, 2),      # signed
+            "power": round(v * i, 2),    # signed
+        }
+
+    @staticmethod
+    def power_summary():
+        viw = Telemetry.battery_v_i_w()
+        if not viw:
+            return None
+
+        ac = Telemetry.ac_online()
+        status = Telemetry.battery_status() or "n/a"
+        cap = Telemetry.battery_capacity()
+
+        cur = viw["current"]
+
+        if cur > 0.05:
+            direction = "charging"
+        elif cur < -0.05:
+            direction = "discharging"
+        else:
+            direction = "idle"
+
+        if ac and direction == "charging":
+            mode = "AC powering system + battery"
+        elif ac:
+            mode = "AC powering system"
+        else:
+            mode = "Battery powering system"
+
+        return {
+            "source": "AC" if ac else "BAT",
+            "status": status,
+            "capacity": cap,
+            "direction": direction,
+            "mode": mode,
+            "voltage": viw["voltage"],
+            "current": round(abs(cur), 2),
+            "power": round(abs(viw["power"]), 2),
+        }
+
+# ==============================
+# Status (snapshot)
+# ==============================
+def show_status():
+    print("AIO v2 Status")
+    print("====================")
+
+    for f, p in GPIO_MAP.items():
+        state = "ON" if GpioController.get_gpio(p) else "OFF"
+        print(f"{f:<5} GPIO{p}: {state}")
+
+    print("--------------------")
+
+    summary = Telemetry.power_summary()
+    if not summary:
+        print("Power: n/a")
+        return
+
+    print(f"Source    : {summary['source']}")
+    print(f"Status    : {summary['status']}")
+    print(f"Capacity  : {summary['capacity']}%")
+    print(f"Direction : {summary['direction']}")
+    print(f"Mode      : {summary['mode']}")
+    print(f"Voltage   : {summary['voltage']} V")
+    print(f"Current   : {summary['current']} A")
+    print(f"Power     : {summary['power']} W")
+
+# ==============================
+# Sampling / Measurement
+# ==============================
+def sample_battery_power(seconds=3.0, interval=0.2):
+    currents, powers = [], []
+    voltage = None
+
+    end = time.time() + seconds
+    while time.time() < end:
+        viw = Telemetry.battery_v_i_w()
+        if viw:
+            voltage = viw["voltage"]
+            currents.append(viw["current"])
+            powers.append(viw["power"])
+        time.sleep(interval)
+
+    if not currents:
+        return None
+
+    return {
+        "voltage": voltage,
+        "current_mean": round(mean(currents), 2),
+        "power_mean": round(mean(powers), 2),
+        "samples": len(currents),
+    }
+
+def measure_feature(feature, seconds=3.0, settle=1.0, interval=0.2):
+    feature = feature.upper()
+    if feature not in GPIO_MAP:
+        print(f"Unknown feature '{feature}'")
+        return 2
+
+    pin = GPIO_MAP[feature]
+    orig = GpioController.get_gpio(pin)
+
+    print(f"Measure: {feature} (GPIO{pin})")
+    print(f"Power source: {'AC online' if Telemetry.ac_online() else 'Battery'}")
+    print(f"Current state: {'ON' if orig else 'OFF'}")
+
+    if orig:
+        on = sample_battery_power(seconds, interval)
+        GpioController.set_gpio(pin, False)
+        time.sleep(settle)
+        off = sample_battery_power(seconds, interval)
+        GpioController.set_gpio(pin, True)
+    else:
+        off = sample_battery_power(seconds, interval)
+        GpioController.set_gpio(pin, True)
+        time.sleep(settle)
+        on = sample_battery_power(seconds, interval)
+        GpioController.set_gpio(pin, False)
+
+    if not on or not off:
+        print("Sampling failed.")
+        return 1
+
+    print("\nResults")
+    print("----------------")
+    print(f"OFF: {off['power_mean']:.2f} W")
+    print(f"ON : {on['power_mean']:.2f} W")
+    print(f"Δ   {on['power_mean'] - off['power_mean']:+.2f} W")
+    return 0
+
+# ==============================
+# Live modes
+# ==============================
+def show_power_live():
     try:
-        from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QWidget
-        from PyQt6.QtGui import QIcon, QAction, QCursor
-        from PyQt6.QtCore import QTimer, Qt
-    except ImportError:
-        print("Error: PyQt6 not installed. Please run 'pip install PyQt6' or use command line mode in headless environment.")
+        while True:
+            summary = Telemetry.power_summary()
+            os.system("clear")
+            print("Power Monitor (Ctrl+C)")
+            print("----------------------")
+
+            if not summary:
+                print("Telemetry unavailable")
+            else:
+                print(f"Source: {summary['source']} | {summary['status']}")
+                print(
+                    f"Battery: {summary['capacity']}% | "
+                    f"{summary['current']} A ({summary['direction']})"
+                )
+                print(
+                    f"Battery rail: {summary['voltage']} V | "
+                    f"{summary['power']} W"
+                )
+                print(f"Mode: {summary['mode']}")
+
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+
+def show_watch():
+    try:
+        while True:
+            states = [
+                f"{f}:{'ON' if GpioController.get_gpio(p) else 'OFF'}"
+                for f, p in GPIO_MAP.items()
+            ]
+
+            summary = Telemetry.power_summary()
+            if summary:
+                print(
+                    "  ".join(states)
+                    + f"  Src:{summary['source']}"
+                    + f"  Batt:{summary['status']}"
+                    + f"  {summary['capacity']}%"
+                    + f"  {summary['power']:.2f}W",
+                    end="\r",
+                    flush=True,
+                )
+            else:
+                print("  ".join(states) + "  Power:n/a", end="\r", flush=True)
+
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+
+# ==============================
+# GUI (Tray + Left-click window)
+# ==============================
+def run_gui():
+    if os.geteuid() == 0:
+        print("Do not run GUI as root.")
         sys.exit(1)
 
-    class AioTrayApp:
-        def __init__(self):
-            self.app = QApplication(sys.argv)
-            self.app.setQuitOnLastWindowClosed(False)
+    from PyQt6.QtWidgets import (
+        QApplication, QSystemTrayIcon, QMenu,
+        QWidget, QVBoxLayout, QLabel, QCheckBox
+    )
+    from PyQt6.QtGui import QAction, QIcon, QCursor
+    from PyQt6.QtCore import Qt, QTimer, QSharedMemory
 
-            # Create Icon
-            self.tray_icon = QSystemTrayIcon()
-            # Use standard system icon or placeholder
-            icon = QIcon.fromTheme("preferences-system", QIcon.fromTheme("applications-system"))
-            if icon.isNull():
-                 style = self.app.style()
-                 icon = style.standardIcon(style.StandardPixmap.SP_ComputerIcon)
-            
-            self.tray_icon.setIcon(icon)
-            self.tray_icon.setVisible(True)
-            self.tray_icon.setToolTip("AIO V2 Controller")
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    app.setDesktopFileName("aiov2_ctl")
 
-            # Dummy Widget for Wayland popup menu parent
-            self.dummy_widget = QWidget()
-            self.dummy_widget.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
-            self.dummy_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-            self.dummy_widget.setWindowOpacity(0) # Invisible
-            self.dummy_widget.resize(1, 1)
+    shared = QSharedMemory("aiov2_ctl_gui")
+    if not shared.create(1):
+        print("AIOv2 GUI already running.")
+        return
 
-            # Create Menu
-            self.menu = QMenu(self.dummy_widget)
-            self.actions = {}
+    tray = QSystemTrayIcon()
 
-            # Add Feature Actions
-            for feature in GPIO_MAP.keys():
-                action = QAction(feature, self.menu)
-                action.setCheckable(True)
-                action.triggered.connect(lambda checked, f=feature: self.toggle_feature(f, checked))
-                self.menu.addAction(action)
-                self.actions[feature] = action
+    # 1) Prefer installed PCB icon (system-wide asset path)
+    icon = QIcon("/usr/local/share/aiov2_ctl/img/pcb-board.png")
 
-            self.menu.addSeparator()
+    # 2) Fallback to desktop theme icon (same as autostart)
+    if icon.isNull():
+        icon = QIcon.fromTheme("utilities-system-monitor")
 
-            # Add Quit Action
-            quit_action = QAction("Quit", self.menu)
-            quit_action.triggered.connect(self.app.quit)
-            self.menu.addAction(quit_action)
+    # 3) Absolute last-resort Qt fallback
+    if icon.isNull():
+        icon = app.style().standardIcon(
+            app.style().StandardPixmap.SP_ComputerIcon
+        )
 
-            self.tray_icon.setContextMenu(self.menu)
-            
-            # Handle Left Click
-            self.tray_icon.activated.connect(self.on_tray_icon_activated)
-            
-            # Refresh status before menu shows
-            self.menu.aboutToShow.connect(self.update_status)
-            # Hide dummy widget when menu closes
-            self.menu.aboutToHide.connect(self.dummy_widget.hide)
+    tray.setIcon(icon)
+    tray.setToolTip("AIOv2 Tools")
 
-            # Initial status update
-            self.update_status()
+    # -------- Right-click menu --------
+    menu = QMenu()
+    actions = {}
 
-        def on_tray_icon_activated(self, reason):
-            """Left click to show menu"""
-            if reason == QSystemTrayIcon.ActivationReason.Trigger:
-                # Wayland workaround: Delay showing menu slightly
-                QTimer.singleShot(100, self.show_menu)
+    for f in GPIO_MAP:
+        a = QAction(f)
+        a.setCheckable(True)
+        a.triggered.connect(
+            lambda checked, f=f: GpioController.set_gpio(GPIO_MAP[f], checked)
+        )
+        menu.addAction(a)
+        actions[f] = a
 
-        def show_menu(self):
-            # Wayland workaround: Ensure parent gets focus
-            self.dummy_widget.move(QCursor.pos())
-            self.dummy_widget.setWindowOpacity(1) # Visible
-            self.dummy_widget.show()
-            self.dummy_widget.activateWindow()
-            # Use popup instead of exec to run non-blocking
-            self.menu.popup(QCursor.pos())
+    menu.addSeparator()
+    power_action = QAction("Power: -- W")
+    power_action.setEnabled(False)
+    menu.addAction(power_action)
 
-        def update_status(self):
-            """Read status from hardware and update menu"""
-            for feature, pin in GPIO_MAP.items():
-                is_on = GpioController.get_gpio_status(pin)
-                
-                # Block signals to avoid triggering toggle handler
-                self.actions[feature].blockSignals(True)
-                self.actions[feature].setChecked(is_on)
-                self.actions[feature].blockSignals(False)
+    menu.addSeparator()
+    menu.addAction("Quit", app.quit)
+    tray.setContextMenu(menu)
 
-        def toggle_feature(self, feature, checked):
-            """Toggle feature switch"""
-            pin = GPIO_MAP.get(feature)
-            if pin is not None:
-                GpioController.set_gpio(pin, checked)
-                # Update status to confirm change
-                self.update_status()
+    # -------- Left-click window --------
+    window = QWidget()
+    window.setWindowTitle("AIO v2 Status")
+    window.setWindowFlags(Qt.WindowType.Tool)
+    layout = QVBoxLayout(window)
 
-        def run(self):
-            sys.exit(self.app.exec())
+    power_label = QLabel("Power: -- W")
+    layout.addWidget(power_label)
 
-    app = AioTrayApp()
-    app.run()
+    checkboxes = {}
+    for f in GPIO_MAP:
+        cb = QCheckBox(f)
+        cb.toggled.connect(
+            lambda checked, f=f: GpioController.set_gpio(GPIO_MAP[f], checked)
+        )
+        layout.addWidget(cb)
+        checkboxes[f] = cb
 
-def show_usage():
-    print("Usage:")
-    print(f"  python {sys.argv[0]}                    # View all feature status")
-    print(f"  python {sys.argv[0]} <feature> <on/off> # Set feature switch")
-    print(f"  python {sys.argv[0]} --gui              # Start System Tray GUI")
-    print("")
-    print("Features: " + ", ".join(GPIO_MAP.keys()))
-    print("Examples:")
-    print(f"  python {sys.argv[0]} GPS on             # Turn ON GPS")
-    print(f"  python {sys.argv[0]} LORA off           # Turn OFF LoRa")
+    def refresh():
+        summary = Telemetry.power_summary()
+        if summary:
+            power_label.setText(
+                f"{summary['mode']} | {summary['power']} W | {summary['capacity']}%"
+            )
+            power_action.setText(f"Power: {summary['power']} W")
+        else:
+            power_label.setText("Power: n/a")
+            power_action.setText("Power: n/a")
 
+        for f, p in GPIO_MAP.items():
+            state = GpioController.get_gpio(p)
+
+            checkboxes[f].blockSignals(True)
+            checkboxes[f].setChecked(state)
+            checkboxes[f].blockSignals(False)
+
+            actions[f].blockSignals(True)
+            actions[f].setChecked(state)
+            actions[f].blockSignals(False)
+
+    def on_activate(reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            refresh()
+            window.move(QCursor.pos())
+            window.show()
+            window.raise_()
+            window.activateWindow()
+
+    tray.activated.connect(on_activate)
+
+    timer = QTimer()
+    timer.timeout.connect(refresh)
+    timer.start(1000)
+
+    tray.show()
+    sys.exit(app.exec())
+
+
+def install_self():
+    if os.geteuid() != 0:
+        print("Install requires sudo.")
+        print("Run: sudo aiov2_ctl --install")
+        return 1
+
+    draw_header("Installing aiov2_ctl system-wide")
+
+    dst = "/usr/local/bin/aiov2_ctl"
+    asset_base = "/usr/local/share/aiov2_ctl"
+    completion_path = "/etc/bash_completion.d/aiov2_ctl"
+
+    repo = get_git_root()
+    if repo:
+        src = os.path.join(repo, "aiov2_ctl.py")
+        req = os.path.join(repo, "requirements.txt")
+        img_src = os.path.join(repo, "img")
+    else:
+        src = os.path.realpath(__file__)
+        req = None
+        img_src = None
+
+    # ------------------------------
+    # Python dependencies
+    # ------------------------------
+    if req and os.path.exists(req):
+        print("Installing Python dependencies…\n")
+        subprocess.check_call([
+            sys.executable,
+            "-m", "pip",
+            "install",
+            "--break-system-packages",
+            "-r", req
+        ])
+    else:
+        print("No requirements.txt found, skipping dependencies.\n")
+
+    # ------------------------------
+    # Install executable
+    # ------------------------------
+    print(f"Installing executable → {dst}\n")
+    subprocess.check_call(["cp", src, dst])
+    subprocess.check_call(["chmod", "+x", dst])
+
+    # ------------------------------
+    # Install assets (icons, etc.)
+    # ------------------------------
+    if img_src and os.path.isdir(img_src):
+        print(f"Installing assets → {asset_base}\n")
+        subprocess.check_call(["mkdir", "-p", asset_base])
+        subprocess.check_call(["cp", "-r", img_src, asset_base])
+    else:
+        print("No assets found, skipping.\n")
+
+    # ------------------------------
+    # Install bash completion
+    # ------------------------------
+    print("Installing bash completion…\n")
+    with open(completion_path, "w") as f:
+        f.write(BASH_COMPLETION)
+
+    os.chmod(completion_path, 0o644)
+
+    print("Bash completion installed.")
+    print("Open a new shell or run:")
+    print("  source /etc/bash_completion\n")
+
+    print("Install complete.")
+    return 0
+
+def update_self():
+    if os.geteuid() == 0:
+        print("Do not run --update with sudo.")
+        print("Run: aiov2_ctl --update")
+        return 1
+
+    draw_header("Updating aiov2_ctl")
+
+    repo = get_git_root()
+    if not repo:
+        print("Not inside a git repository.")
+        return 1
+
+    branch = get_git_branch(repo) or "unknown"
+    print(f"Current branch: {branch}\n")
+    print("Pulling latest changes…\n")
+
+    if not run_cmd(["git", "pull", "--ff-only"], cwd=repo):
+        print("Git pull failed. Resolve manually.")
+        return 1
+
+    print("\nReinstalling updated version…\n")
+
+    # escalate only for install
+    rerun_with_sudo(["--install"])
+    return 0
+
+
+# ==============================
+# Entrypoint
+# ==============================
 def main():
     if len(sys.argv) == 1:
-        # No arguments, show status
-        GpioController.show_all_status()
-    elif len(sys.argv) == 2:
-        if sys.argv[1] == '--gui':
-            run_gui()
-        else:
-            print("Error: Invalid argument")
-            show_usage()
+        for f, p in GPIO_MAP.items():
+            print(f"{f}: {'ON' if GpioController.get_gpio(p) else 'OFF'}")
+        return
+
+    arg = sys.argv[1]
+
+    if arg in ("--help", "-h"):
+        print(HELP_TEXT)
+
+    elif arg == "--install":
+        sys.exit(install_self())
+
+    elif arg == "--update":
+        sys.exit(update_self())
+
+    elif arg == "--status":
+        show_status()
+
+    elif arg == "--power":
+        show_power_live()
+
+    elif arg == "--watch":
+        show_watch()
+
+    elif arg == "--gui":
+        run_gui()
+
+    elif arg == "--autostart":
+        sys.exit(enable_autostart())
+
+    elif arg == "--no-autostart":
+        sys.exit(disable_autostart())
+
+    elif arg == "--add-apps":
+        sys.exit(add_apps())
+
+    elif arg == "--remove-apps":
+        sys.exit(remove_apps())
+
+    elif arg == "--sync-rtc":
+        sys.exit(sync_rtc())
+
+    elif arg == "--measure":
+        if len(sys.argv) < 3:
+            print("Usage: aiov2_ctl --measure <FEATURE>")
             sys.exit(1)
+        feature = sys.argv[2]
+        sys.exit(measure_feature(feature))
+
     elif len(sys.argv) == 3:
-        feature = sys.argv[1].upper()
-        state_str = sys.argv[2].lower()
-        
-        if feature not in GPIO_MAP:
-            print(f"Error: Unknown feature '{sys.argv[1]}'")
-            show_usage()
+        feature = arg.upper()
+        state = sys.argv[2].lower()
+
+        if feature not in GPIO_MAP or state not in ("on", "off"):
+            print("Use --help")
             sys.exit(1)
-            
-        if state_str not in ['on', 'off']:
-            print(f"Error: State must be 'on' or 'off'")
-            show_usage()
-            sys.exit(1)
-            
-        state = (state_str == 'on')
-        pin = GPIO_MAP[feature]
-        GpioController.set_gpio(pin, state)
+
+        GpioController.set_gpio(GPIO_MAP[feature], state == "on")
+
     else:
-        print("Error: Incorrect number of arguments")
-        show_usage()
-        sys.exit(1)
+        print("Use --help")
 
 if __name__ == "__main__":
     main()
