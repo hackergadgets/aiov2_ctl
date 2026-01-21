@@ -661,12 +661,18 @@ def run_gui():
         print("Do not run GUI as root.")
         sys.exit(1)
 
-    from PyQt6.QtWidgets import (
-        QApplication, QSystemTrayIcon, QMenu,
-        QWidget, QVBoxLayout, QLabel, QCheckBox
-    )
-    from PyQt6.QtGui import QAction, QIcon, QCursor
-    from PyQt6.QtCore import Qt, QTimer, QSharedMemory
+    try:
+        from PyQt6.QtWidgets import (
+            QApplication, QSystemTrayIcon, QMenu,
+            QWidget, QVBoxLayout, QLabel, QCheckBox
+        )
+        from PyQt6.QtGui import QAction, QIcon, QCursor
+        from PyQt6.QtCore import Qt, QTimer, QSharedMemory
+    except ImportError:
+        print("PyQt6 is not installed.")
+        print("Install it with:")
+        print("  sudo apt install python3-pyqt6")
+        sys.exit(1)
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -790,27 +796,10 @@ def install_self():
     repo = get_git_root()
     if repo:
         src = os.path.join(repo, "aiov2_ctl.py")
-        req = os.path.join(repo, "requirements.txt")
         img_src = os.path.join(repo, "img")
     else:
         src = os.path.realpath(__file__)
-        req = None
         img_src = None
-
-    # ------------------------------
-    # Python dependencies
-    # ------------------------------
-    if req and os.path.exists(req):
-        print("Installing Python dependencies…\n")
-        subprocess.check_call([
-            sys.executable,
-            "-m", "pip",
-            "install",
-            "--break-system-packages",
-            "-r", req
-        ])
-    else:
-        print("No requirements.txt found, skipping dependencies.\n")
 
     # ------------------------------
     # Install executable
