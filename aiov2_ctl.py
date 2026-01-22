@@ -8,7 +8,9 @@ import shutil
 from statistics import mean
 
 def rerun_with_sudo(extra_args=None):
-    cmd = ["sudo", sys.executable, os.path.realpath(__file__)]
+    python3 = shutil.which("python3") or "/usr/bin/python3"
+
+    cmd = ["sudo", python3, os.path.realpath(__file__)]
     if extra_args:
         cmd += extra_args
     else:
@@ -16,6 +18,18 @@ def rerun_with_sudo(extra_args=None):
 
     os.execvp("sudo", cmd)
 
+def is_ssh_session():
+    return any(
+        os.environ.get(v)
+        for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")
+    )
+
+
+def has_desktop_session():
+    return any(
+        os.environ.get(v)
+        for v in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE")
+    )
 
 def run_cmd(cmd, cwd=None):
     try:
@@ -274,6 +288,18 @@ Terminal=false
 X-GNOME-Autostart-enabled=true
 XDG_AUTOSTART_DELAY=5
 """
+
+SYSTEM_DESKTOP_ENTRY = """[Desktop Entry]
+Type=Application
+Name=AIO v2 Controller
+Comment=HackerGadgets uConsole AIO v2 controller
+Exec=/usr/bin/python3 /usr/local/bin/aiov2_ctl --gui
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Utility;
+StartupNotify=false
+"""
+
 
 def autostart_path():
     return os.path.expanduser("~/.config/autostart/aiov2_ctl.desktop")
@@ -661,6 +687,16 @@ def run_gui():
         print("Do not run GUI as root.")
         sys.exit(1)
 
+    if is_ssh_session() and not has_desktop_session():
+        print("GUI cannot be launched over SSH.")
+        print("Run this on the device desktop or enable autostart.")
+        sys.exit(1)
+
+    if not has_desktop_session():
+        print("No graphical session detected.")
+        print("Run the GUI from the device desktop or enable autostart.")
+        sys.exit(1)
+
     try:
         from PyQt6.QtWidgets import (
             QApplication, QSystemTrayIcon, QMenu,
@@ -701,9 +737,20 @@ def run_gui():
     tray.setIcon(icon)
     tray.setToolTip("AIOv2 Tools")
 
-    # -------- Right-click menu --------
+
+
+    # -------- Init Right-click menu --------
     menu = QMenu()
     actions = {}
+
+
+    repo = get_git_root()
+
+    update_action = QAction("Checking for updates…")
+    update_action.setEnabled(False)
+    menu.addSeparator()
+    menu.addAction(update_action)
+
 
     for f in GPIO_MAP:
         a = QAction(f)
@@ -777,6 +824,30 @@ def run_gui():
     timer.timeout.connect(refresh)
     timer.start(1000)
 
+
+    def update_check():
+        if not repo:
+            update_action.setText("Not installed from git")
+            return
+
+        if check_update_available(repo):
+            update_action.setText("Update available → Install")
+            update_action.setEnabled(True)
+
+            def run_update():
+                subprocess.Popen([
+                    "x-terminal-emulator",
+                    "-e",
+                    "aiov2_ctl --update"
+                ])
+
+            update_action.triggered.connect(run_update)
+        else:
+            update_action.setText("Up to date")
+
+    QTimer.singleShot(10000, update_check)
+
+
     tray.show()
     sys.exit(app.exec())
 
@@ -792,6 +863,7 @@ def install_self():
     dst = "/usr/local/bin/aiov2_ctl"
     asset_base = "/usr/local/share/aiov2_ctl"
     completion_path = "/etc/bash_completion.d/aiov2_ctl"
+    desktop_path = "/usr/share/applications/aiov2_ctl.desktop"
 
     repo = get_git_root()
     if repo:
@@ -824,15 +896,20 @@ def install_self():
     print("Installing bash completion…\n")
     with open(completion_path, "w") as f:
         f.write(BASH_COMPLETION)
-
     os.chmod(completion_path, 0o644)
 
-    print("Bash completion installed.")
-    print("Open a new shell or run:")
-    print("  source /etc/bash_completion\n")
+    # ------------------------------
+    # Install system desktop entry
+    # ------------------------------
+    print(f"Installing desktop entry → {desktop_path}\n")
+    with open(desktop_path, "w") as f:
+        f.write(SYSTEM_DESKTOP_ENTRY)
+    os.chmod(desktop_path, 0o644)
 
     print("Install complete.")
+    print("Open a new shell for bash completion to activate.")
     return 0
+
 
 def update_self():
     if os.geteuid() == 0:
@@ -861,6 +938,26 @@ def update_self():
     rerun_with_sudo(["--install"])
     return 0
 
+def check_update_available(repo):
+    try:
+        # fetch quietly, timeout-safe
+        subprocess.check_call(
+            ["git", "fetch", "--quiet"],
+            cwd=repo,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+
+        behind = subprocess.check_output(
+            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            cwd=repo,
+            text=True,
+        ).strip()
+
+        return int(behind) > 0
+    except Exception:
+        return False
 
 # ==============================
 # Entrypoint
