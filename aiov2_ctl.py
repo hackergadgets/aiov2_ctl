@@ -758,8 +758,6 @@ def run_gui():
 
     update_action = QAction("Checking for updates…")
     update_action.setEnabled(False)
-    menu.addSeparator()
-    menu.addAction(update_action)
 
 
     for f in GPIO_MAP:
@@ -775,6 +773,9 @@ def run_gui():
     power_action = QAction("Power: -- W")
     power_action.setEnabled(False)
     menu.addAction(power_action)
+
+    menu.addSeparator()
+    menu.addAction(update_action)
 
     menu.addSeparator()
     menu.addAction("Quit", app.quit)
