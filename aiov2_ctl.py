@@ -843,6 +843,14 @@ def run_gui():
         if check_update_available(repo):
             update_action.setText("Update available → Install")
             update_action.setEnabled(True)
+            
+            # Show notification
+            tray.showMessage(
+                "AIOv2 Update",
+                "A new version is available. Right-click to install.",
+                QSystemTrayIcon.MessageIcon.Information,
+                30000  # Show for 30 seconds
+            )
 
             def run_update():
                 subprocess.Popen([
@@ -850,12 +858,23 @@ def run_gui():
                     "-e",
                     "aiov2_ctl --update"
                 ])
+                update_action.setText("Updating...")
+                update_action.setEnabled(False)
+                # Recheck after 30 seconds (time for update to complete)
+                QTimer.singleShot(30000, update_check)
 
             update_action.triggered.connect(run_update)
         else:
             update_action.setText("Up to date")
+            update_action.setEnabled(False)
 
+    # Initial check after 10 seconds
     QTimer.singleShot(10000, update_check)
+    
+    # Periodic recheck every 3 hours
+    update_timer = QTimer()
+    update_timer.timeout.connect(update_check)
+    update_timer.start(10800000)  # 3 hours in milliseconds
 
 
     tray.show()
