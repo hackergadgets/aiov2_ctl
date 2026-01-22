@@ -99,6 +99,7 @@ _aiov2_ctl()
         --measure
         --install
         --update
+        --check-update
         --autostart
         --no-autostart
         --add-apps
@@ -237,6 +238,7 @@ USAGE:
   aiov2_ctl <FEATURE> on|off
   aiov2_ctl --install
   aiov2_ctl --update
+  aiov2_ctl --check-update
   aiov2_ctl --help
   aiov2_ctl --autostart
   aiov2_ctl --no-autostart
@@ -255,6 +257,7 @@ COMMANDS:
   --measure    Measure power delta of a feature
   --install    Install tool to /usr/local/bin
   --update     Pull latest version from git and reinstall
+  --check-update     Check for updates and prompt to install
   --autostart        Enable GUI autostart on login
   --no-autostart     Disable GUI autostart
   --add-apps   Install HackerGadgets AIO apps
@@ -978,6 +981,78 @@ def update_self():
     rerun_with_sudo(["--install"])
     return 0
 
+def check_update_interactive():
+    """Check for updates, show diff, and prompt user to update."""
+    draw_header("Checking for updates")
+
+    meta = load_install_meta()
+    if not meta or "repo_path" not in meta:
+        print("No install metadata found.")
+        print("Reinstall from the original git checkout.")
+        return 1
+
+    repo = os.path.realpath(meta["repo_path"])
+    if not os.path.isdir(repo):
+        print(f"Source repo not found: {repo}")
+        print("Reinstall required.")
+        return 1
+
+    branch = meta.get("branch") or get_git_branch(repo) or "main"
+    print(f"Repository: {repo}")
+    print(f"Branch: {branch}\n")
+
+    print("Fetching latest changes...\n")
+    try:
+        subprocess.check_call(
+            ["git", "fetch", "--quiet"],
+            cwd=repo,
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"Failed to fetch updates: {e}")
+        return 1
+
+    # Check how many commits behind
+    try:
+        behind_count = subprocess.check_output(
+            ["git", "rev-list", "--count", f"HEAD..origin/{branch}"],
+            cwd=repo,
+            text=True,
+        ).strip()
+        behind = int(behind_count)
+    except Exception:
+        print("Could not determine update status.")
+        return 1
+
+    if behind == 0:
+        print("✓ Already up to date.")
+        return 0
+
+    print(f"📦 {behind} new commit{'s' if behind > 1 else ''} available:\n")
+
+    # Show commit log
+    try:
+        log_output = subprocess.check_output(
+            ["git", "log", "--oneline", "--decorate", "--color=always",
+             f"HEAD..origin/{branch}"],
+            cwd=repo,
+            text=True,
+        ).strip()
+        print(log_output)
+    except Exception:
+        print("Could not retrieve commit log.")
+
+    print("\n" + "="*60)
+    response = input("\nUpdate now? [Y/n]: ").strip().lower()
+
+    if response in ("", "y", "yes"):
+        print("\nStarting update...\n")
+        return update_self()
+    else:
+        print("\nUpdate cancelled.")
+        return 0
+
+
 def check_update_available(repo):
     try:
         # fetch quietly, timeout-safe
@@ -999,6 +1074,78 @@ def check_update_available(repo):
     except Exception:
         return False
 
+
+def check_update_interactive():
+    """Check for updates, show diff, and prompt user to update."""
+    draw_header("Checking for updates")
+
+    meta = load_install_meta()
+    if not meta or "repo_path" not in meta:
+        print("No install metadata found.")
+        print("Reinstall from the original git checkout.")
+        return 1
+
+    repo = os.path.realpath(meta["repo_path"])
+    if not os.path.isdir(repo):
+        print(f"Source repo not found: {repo}")
+        print("Reinstall required.")
+        return 1
+
+    branch = meta.get("branch") or get_git_branch(repo) or "main"
+    print(f"Repository: {repo}")
+    print(f"Branch: {branch}\n")
+
+    print("Fetching latest changes...\n")
+    try:
+        subprocess.check_call(
+            ["git", "fetch", "--quiet"],
+            cwd=repo,
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"Failed to fetch updates: {e}")
+        return 1
+
+    # Check how many commits behind
+    try:
+        behind_count = subprocess.check_output(
+            ["git", "rev-list", "--count", f"HEAD..origin/{branch}"],
+            cwd=repo,
+            text=True,
+        ).strip()
+        behind = int(behind_count)
+    except Exception:
+        print("Could not determine update status.")
+        return 1
+
+    if behind == 0:
+        print("✓ Already up to date.")
+        return 0
+
+    print(f"📦 {behind} new commit{'s' if behind > 1 else ''} available:\n")
+
+    # Show commit log
+    try:
+        log_output = subprocess.check_output(
+            ["git", "log", "--oneline", "--decorate", "--color=always",
+             f"HEAD..origin/{branch}"],
+            cwd=repo,
+            text=True,
+        ).strip()
+        print(log_output)
+    except Exception:
+        print("Could not retrieve commit log.")
+
+    print("\n" + "="*60)
+    response = input("\nUpdate now? [Y/n]: ").strip().lower()
+
+    if response in ("", "y", "yes"):
+        print("\nStarting update...\n")
+        return update_self()
+    else:
+        print("\nUpdate cancelled.")
+        return 0
+
 # ==============================
 # Entrypoint
 # ==============================
@@ -1018,6 +1165,9 @@ def main():
 
     elif arg == "--update":
         sys.exit(update_self())
+
+    elif arg == "--check-update":
+        sys.exit(check_update_interactive())
 
     elif arg == "--status":
         show_status()
