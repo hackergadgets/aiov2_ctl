@@ -7,6 +7,8 @@ import json
 import shutil
 from statistics import mean
 
+INSTALL_META_PATH = "/usr/local/share/aiov2_ctl/install.json"
+
 def rerun_with_sudo(extra_args=None):
     python3 = shutil.which("python3") or "/usr/bin/python3"
 
@@ -38,18 +40,6 @@ def run_cmd(cmd, cwd=None):
     except subprocess.CalledProcessError:
         return False
 
-def git_pull(repo):
-    try:
-        out = subprocess.check_output(
-            ["git", "pull", "--ff-only"],
-            cwd=repo,
-            stderr=subprocess.STDOUT,
-            text=True
-        ).strip()
-        return out
-    except subprocess.CalledProcessError as e:
-        return None
-
 def get_git_root():
     try:
         return subprocess.check_output(
@@ -69,6 +59,14 @@ def get_git_branch(repo):
             text=True
         ).strip()
     except subprocess.CalledProcessError:
+        return None
+
+
+def load_install_meta():
+    try:
+        with open(INSTALL_META_PATH) as f:
+            return json.load(f)
+    except Exception:
         return None
 
 BANNER = """
@@ -865,20 +863,47 @@ def install_self():
     completion_path = "/etc/bash_completion.d/aiov2_ctl"
     desktop_path = "/usr/share/applications/aiov2_ctl.desktop"
 
+    stored_meta = load_install_meta() or {}
     repo = get_git_root()
+    if not repo:
+        repo_from_meta = stored_meta.get("repo_path")
+        if repo_from_meta and os.path.isdir(repo_from_meta):
+            repo = repo_from_meta
+
     if repo:
+        repo = os.path.realpath(repo)
         src = os.path.join(repo, "aiov2_ctl.py")
         img_src = os.path.join(repo, "img")
     else:
         src = os.path.realpath(__file__)
         img_src = None
 
+    meta = stored_meta.copy() if stored_meta else {}
+
+    if repo:
+        meta["repo_path"] = repo
+        try:
+            meta["remote"] = subprocess.check_output(
+                ["git", "remote", "get-url", "origin"],
+                cwd=repo,
+                text=True
+            ).strip()
+        except Exception:
+            pass
+
+        meta["branch"] = get_git_branch(repo) or "main"
+
     # ------------------------------
     # Install executable
     # ------------------------------
     print(f"Installing executable → {dst}\n")
-    subprocess.check_call(["cp", src, dst])
-    subprocess.check_call(["chmod", "+x", dst])
+    src_real = os.path.realpath(src)
+    dst_real = os.path.realpath(dst)
+    if src_real == dst_real:
+        print("Executable already installed, skipping copy.\n")
+    else:
+        subprocess.check_call(["cp", src, dst])
+        subprocess.check_call(["chmod", "+x", dst])
 
     # ------------------------------
     # Install assets (icons, etc.)
@@ -906,6 +931,10 @@ def install_self():
         f.write(SYSTEM_DESKTOP_ENTRY)
     os.chmod(desktop_path, 0o644)
 
+    os.makedirs(os.path.dirname(INSTALL_META_PATH), exist_ok=True)
+    with open(INSTALL_META_PATH, "w") as f:
+        json.dump(meta, f, indent=2)
+
     print("Install complete.")
     print("Open a new shell for bash completion to activate.")
     return 0
@@ -919,12 +948,19 @@ def update_self():
 
     draw_header("Updating aiov2_ctl")
 
-    repo = get_git_root()
-    if not repo:
-        print("Not inside a git repository.")
+    meta = load_install_meta()
+    if not meta or "repo_path" not in meta:
+        print("No install metadata found.")
+        print("Reinstall from the original git checkout.")
         return 1
 
-    branch = get_git_branch(repo) or "unknown"
+    repo = os.path.realpath(meta["repo_path"])
+    if not os.path.isdir(repo):
+        print(f"Source repo not found: {repo}")
+        print("Reinstall required.")
+        return 1
+
+    branch = meta.get("branch") or get_git_branch(repo) or "unknown"
     print(f"Current branch: {branch}\n")
     print("Pulling latest changes…\n")
 
