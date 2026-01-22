@@ -742,7 +742,11 @@ def run_gui():
     actions = {}
 
 
-    repo = get_git_root()
+    meta = load_install_meta()
+    repo = None
+
+    if meta and "repo_path" in meta and os.path.isdir(meta["repo_path"]):
+        repo = os.path.realpath(meta["repo_path"])
 
     update_action = QAction("Checking for updates…")
     update_action.setEnabled(False)
