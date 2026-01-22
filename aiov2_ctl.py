@@ -123,6 +123,11 @@ _aiov2_ctl()
         COMPREPLY=( $(compgen -W "${features}" -- "${cur}") )
         return 0
     fi
+
+    if [[ ${COMP_CWORD} -ge 3 ]] && [[ "${COMP_WORDS[1]}" == "--measure" ]]; then
+        COMPREPLY=( $(compgen -W "--seconds --interval --settle" -- "${cur}") )
+        return 0
+    fi
 }
 
 complete -F _aiov2_ctl aiov2_ctl
@@ -1054,7 +1059,15 @@ def check_update_interactive():
 
 
 def check_update_available(repo):
+    """Quick check if updates are available (used by GUI)."""
     try:
+        meta = load_install_meta()
+        branch = "main"
+        if meta and "branch" in meta:
+            branch = meta["branch"]
+        elif repo:
+            branch = get_git_branch(repo) or "main"
+
         # fetch quietly, timeout-safe
         subprocess.check_call(
             ["git", "fetch", "--quiet"],
@@ -1065,7 +1078,7 @@ def check_update_available(repo):
         )
 
         behind = subprocess.check_output(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "rev-list", "--count", f"HEAD..origin/{branch}"],
             cwd=repo,
             text=True,
         ).strip()
@@ -1073,78 +1086,6 @@ def check_update_available(repo):
         return int(behind) > 0
     except Exception:
         return False
-
-
-def check_update_interactive():
-    """Check for updates, show diff, and prompt user to update."""
-    draw_header("Checking for updates")
-
-    meta = load_install_meta()
-    if not meta or "repo_path" not in meta:
-        print("No install metadata found.")
-        print("Reinstall from the original git checkout.")
-        return 1
-
-    repo = os.path.realpath(meta["repo_path"])
-    if not os.path.isdir(repo):
-        print(f"Source repo not found: {repo}")
-        print("Reinstall required.")
-        return 1
-
-    branch = meta.get("branch") or get_git_branch(repo) or "main"
-    print(f"Repository: {repo}")
-    print(f"Branch: {branch}\n")
-
-    print("Fetching latest changes...\n")
-    try:
-        subprocess.check_call(
-            ["git", "fetch", "--quiet"],
-            cwd=repo,
-            timeout=10,
-        )
-    except Exception as e:
-        print(f"Failed to fetch updates: {e}")
-        return 1
-
-    # Check how many commits behind
-    try:
-        behind_count = subprocess.check_output(
-            ["git", "rev-list", "--count", f"HEAD..origin/{branch}"],
-            cwd=repo,
-            text=True,
-        ).strip()
-        behind = int(behind_count)
-    except Exception:
-        print("Could not determine update status.")
-        return 1
-
-    if behind == 0:
-        print("✓ Already up to date.")
-        return 0
-
-    print(f"📦 {behind} new commit{'s' if behind > 1 else ''} available:\n")
-
-    # Show commit log
-    try:
-        log_output = subprocess.check_output(
-            ["git", "log", "--oneline", "--decorate", "--color=always",
-             f"HEAD..origin/{branch}"],
-            cwd=repo,
-            text=True,
-        ).strip()
-        print(log_output)
-    except Exception:
-        print("Could not retrieve commit log.")
-
-    print("\n" + "="*60)
-    response = input("\nUpdate now? [Y/n]: ").strip().lower()
-
-    if response in ("", "y", "yes"):
-        print("\nStarting update...\n")
-        return update_self()
-    else:
-        print("\nUpdate cancelled.")
-        return 0
 
 # ==============================
 # Entrypoint
@@ -1198,10 +1139,41 @@ def main():
 
     elif arg == "--measure":
         if len(sys.argv) < 3:
-            print("Usage: aiov2_ctl --measure <FEATURE>")
+            print("Usage: aiov2_ctl --measure <FEATURE> [--seconds N] [--interval S] [--settle S]")
             sys.exit(1)
+        
         feature = sys.argv[2]
-        sys.exit(measure_feature(feature))
+        kwargs = {}
+        
+        # Parse optional arguments
+        i = 3
+        while i < len(sys.argv):
+            if sys.argv[i] == "--seconds" and i + 1 < len(sys.argv):
+                try:
+                    kwargs["seconds"] = float(sys.argv[i + 1])
+                    i += 2
+                except ValueError:
+                    print(f"Invalid value for --seconds: {sys.argv[i + 1]}")
+                    sys.exit(1)
+            elif sys.argv[i] == "--interval" and i + 1 < len(sys.argv):
+                try:
+                    kwargs["interval"] = float(sys.argv[i + 1])
+                    i += 2
+                except ValueError:
+                    print(f"Invalid value for --interval: {sys.argv[i + 1]}")
+                    sys.exit(1)
+            elif sys.argv[i] == "--settle" and i + 1 < len(sys.argv):
+                try:
+                    kwargs["settle"] = float(sys.argv[i + 1])
+                    i += 2
+                except ValueError:
+                    print(f"Invalid value for --settle: {sys.argv[i + 1]}")
+                    sys.exit(1)
+            else:
+                print(f"Unknown argument: {sys.argv[i]}")
+                sys.exit(1)
+        
+        sys.exit(measure_feature(feature, **kwargs))
 
     elif len(sys.argv) == 3:
         feature = arg.upper()
