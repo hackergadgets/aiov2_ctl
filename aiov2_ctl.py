@@ -158,6 +158,14 @@ def report_and_disable_mesh_autostart_if_default(context_label=None):
         print_mesh_on_boot_status()
     return meshtastic_disabled
 
+def print_mesh_on_boot_status_hint(context_label=None):
+    if context_label:
+        print(f"\n{context_label}")
+    else:
+        print("\nMeshtastic boot config status:")
+    print_mesh_on_boot_status()
+    print("Override: aiov2_ctl --mesh-on-boot")
+
 BANNER = """
    db    88  dP"Yb      Yb    dP oP"Yb.
   dPYb   88 dP   Yb      Yb  dP  "' dP'
@@ -1129,6 +1137,8 @@ def install_self():
 
     print("Install complete.")
     print("Open a new shell for bash completion to activate.")
+    if "--show-mesh-status" in sys.argv:
+        print_mesh_on_boot_status_hint("Meshtastic boot config status:")
     return 0
 
 
@@ -1165,7 +1175,7 @@ def update_self():
     report_and_disable_mesh_autostart_if_default("Meshtastic boot config status:")
 
     # escalate only for install
-    rerun_with_sudo(["--install"])
+    rerun_with_sudo(["--install", "--show-mesh-status"])
     return 0
 
 def check_update_interactive():
