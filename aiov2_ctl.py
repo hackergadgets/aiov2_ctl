@@ -8,6 +8,8 @@ import shutil
 from statistics import mean
 
 INSTALL_META_PATH = "/usr/local/share/aiov2_ctl/install.json"
+CONFIG_PATH = "/usr/local/share/aiov2_ctl/config.json"
+USER_CONFIG_PATH = os.path.expanduser("~/.config/aiov2_ctl/config.json")
 
 def rerun_with_sudo(extra_args=None):
     python3 = shutil.which("python3") or "/usr/bin/python3"
@@ -69,6 +71,78 @@ def load_install_meta():
     except Exception:
         return None
 
+def load_config():
+    config = {}
+    for path in (CONFIG_PATH, USER_CONFIG_PATH):
+        try:
+            with open(path) as f:
+                config.update(json.load(f))
+        except Exception:
+            continue
+    return config
+
+def save_config(config):
+    try:
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(config, f, indent=2)
+        return
+    except PermissionError:
+        pass
+
+    os.makedirs(os.path.dirname(USER_CONFIG_PATH), exist_ok=True)
+    with open(USER_CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=2)
+
+def apply_mesh_on_boot(enabled, update_config=True, announce=True):
+    if update_config:
+        config = load_config()
+        config["mesh_on_boot"] = bool(enabled)
+        save_config(config)
+
+    action = ["enable"] if enabled else ["disable", "--now"]
+    subprocess.call(
+        ["sudo", "-n", "systemctl", *action, "meshtasticd"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    if announce:
+        if enabled:
+            print("Meshtastic will start on boot.")
+        else:
+            print("Meshtastic will not start on boot (LORA controls startup).")
+
+def disable_mesh_autostart_if_default(announce=True):
+    config = load_config()
+    if bool(config.get("mesh_on_boot", False)):
+        return False
+    if not GpioController._service_enabled("meshtasticd"):
+        return False
+    apply_mesh_on_boot(False, update_config=False, announce=announce)
+    return True
+
+def get_mesh_on_boot_status():
+    config = load_config()
+    config_enabled = bool(config.get("mesh_on_boot", False))
+    service_enabled = GpioController._service_enabled("meshtasticd")
+    return {
+        "config_enabled": config_enabled,
+        "service_enabled": service_enabled,
+    }
+
+def format_mesh_on_boot_status(status):
+    config_state = "on" if status["config_enabled"] else "off"
+    service_state = "enabled" if status["service_enabled"] else "disabled"
+    if status["config_enabled"]:
+        mode = "override enabled"
+    else:
+        mode = "default (LORA controls startup)"
+    return f"Meshtastic autostart: {service_state} | mesh_on_boot: {config_state} ({mode})"
+
+def print_mesh_on_boot_status():
+    print(format_mesh_on_boot_status(get_mesh_on_boot_status()))
+
 BANNER = """
    db    88  dP"Yb      Yb    dP oP"Yb.
   dPYb   88 dP   Yb      Yb  dP  "' dP'
@@ -102,6 +176,8 @@ _aiov2_ctl()
         --check-update
         --autostart
         --no-autostart
+        --mesh-on-boot
+        --mesh-off-boot
         --add-apps
         --remove-apps
         --sync-rtc
@@ -116,6 +192,11 @@ _aiov2_ctl()
 
     if [[ "${prev}" =~ ^(GPS|LORA|SDR|USB)$ ]]; then
         COMPREPLY=( $(compgen -W "on off" -- "${cur}") )
+        return 0
+    fi
+
+    if [[ "${prev}" == "--mesh-on-boot" ]]; then
+        COMPREPLY=( $(compgen -W "on off status" -- "${cur}") )
         return 0
     fi
 
@@ -247,6 +328,7 @@ USAGE:
   aiov2_ctl --help
   aiov2_ctl --autostart
   aiov2_ctl --no-autostart
+    aiov2_ctl --mesh-on-boot [on|off|status]
   sudo aiov2_ctl --add-apps
   sudo aiov2_ctl --remove-apps
   sudo aiov2_ctl --sync-rtc
@@ -265,6 +347,8 @@ COMMANDS:
   --check-update     Check for updates and prompt to install
   --autostart        Enable GUI autostart on login
   --no-autostart     Disable GUI autostart
+        --mesh-on-boot     Enable meshtasticd autostart (or status)
+        --mesh-off-boot    Disable meshtasticd autostart (default)
   --add-apps   Install HackerGadgets AIO apps
   --sync-rtc   Write current system time to hardware RTC
   --remove-apps   Remove HackerGadgets AIO apps
@@ -368,8 +452,17 @@ def add_apps():
         "-y"
     ])
 
+    print("\nMeshtastic boot config status:")
+    print_mesh_on_boot_status()
+    meshtastic_disabled = disable_mesh_autostart_if_default(announce=False)
+
     print("\nInstallation complete.\n")
     print(POST_INSTALL_TIPS)
+    if meshtastic_disabled:
+        print("\nMeshtastic autostart disabled (LORA controls startup).")
+        print("Override: aiov2_ctl --mesh-on-boot")
+        print("Meshtastic boot config status:")
+        print_mesh_on_boot_status()
     return 0
 
 
@@ -434,6 +527,46 @@ class GpioController:
             return None
 
     @staticmethod
+    def _service_active(name):
+        cmd = ["systemctl", "is-active", "--quiet", name]
+        if os.geteuid() == 0:
+            return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+        return subprocess.run(
+            ["sudo", "-n", *cmd],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
+
+    @staticmethod
+    def _service_enabled(name):
+        cmd = ["systemctl", "is-enabled", "--quiet", name]
+        if os.geteuid() == 0:
+            return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+        return subprocess.run(
+            ["sudo", "-n", *cmd],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
+
+    @staticmethod
+    def _run_service(action):
+        if isinstance(action, (list, tuple)):
+            cmd = ["systemctl", *action, "meshtasticd"]
+        else:
+            cmd = ["systemctl", action, "meshtasticd"]
+        if os.geteuid() == 0:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+
+        subprocess.run(
+            ["sudo", "-n", *cmd],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    @staticmethod
     def set_gpio(pin, state):
         subprocess.call([
             "pinctrl",
@@ -442,6 +575,26 @@ class GpioController:
             "op",
             "dh" if state else "dl",
         ])
+
+    @staticmethod
+    def set_feature(feature, state):
+        pin = GPIO_MAP.get(feature)
+        if pin is None:
+            return
+        GpioController.set_gpio(pin, state)
+        if feature == "LORA":
+            is_active = GpioController._service_active("meshtasticd")
+            if state:
+                # Allow device enumeration after power-on
+                time.sleep(0.5)
+                if is_active:
+                    GpioController._run_service("restart")
+                else:
+                    GpioController._run_service("start")
+            else:
+                if is_active:
+                    GpioController._run_service("stop")
+                disable_mesh_autostart_if_default(announce=False)
 
     @staticmethod
     def get_gpio(pin):
@@ -608,16 +761,16 @@ def measure_feature(feature, seconds=3.0, settle=1.0, interval=0.2):
 
     if orig:
         on = sample_battery_power(seconds, interval)
-        GpioController.set_gpio(pin, False)
+        GpioController.set_feature(feature, False)
         time.sleep(settle)
         off = sample_battery_power(seconds, interval)
-        GpioController.set_gpio(pin, True)
+        GpioController.set_feature(feature, True)
     else:
         off = sample_battery_power(seconds, interval)
-        GpioController.set_gpio(pin, True)
+        GpioController.set_feature(feature, True)
         time.sleep(settle)
         on = sample_battery_power(seconds, interval)
-        GpioController.set_gpio(pin, False)
+        GpioController.set_feature(feature, False)
 
     if not on or not off:
         print("Sampling failed.")
@@ -764,7 +917,7 @@ def run_gui():
         a = QAction(f)
         a.setCheckable(True)
         a.triggered.connect(
-            lambda checked, f=f: GpioController.set_gpio(GPIO_MAP[f], checked)
+            lambda checked, f=f: GpioController.set_feature(f, checked)
         )
         menu.addAction(a)
         actions[f] = a
@@ -794,7 +947,7 @@ def run_gui():
     for f in GPIO_MAP:
         cb = QCheckBox(f)
         cb.toggled.connect(
-            lambda checked, f=f: GpioController.set_gpio(GPIO_MAP[f], checked)
+            lambda checked, f=f: GpioController.set_feature(f, checked)
         )
         layout.addWidget(cb)
         checkboxes[f] = cb
@@ -1002,6 +1155,15 @@ def update_self():
 
     print("\nReinstalling updated version…\n")
 
+    print("Meshtastic boot config status:")
+    print_mesh_on_boot_status()
+    meshtastic_disabled = disable_mesh_autostart_if_default(announce=False)
+    if meshtastic_disabled:
+        print("Meshtastic autostart disabled (LORA controls startup).")
+        print("Override: aiov2_ctl --mesh-on-boot")
+        print("Meshtastic boot config status:")
+        print_mesh_on_boot_status()
+
     # escalate only for install
     rerun_with_sudo(["--install"])
     return 0
@@ -1148,6 +1310,21 @@ def main():
     elif arg == "--no-autostart":
         sys.exit(disable_autostart())
 
+    elif arg == "--mesh-on-boot":
+        state = None
+        if len(sys.argv) > 2 and sys.argv[2].lower() in ("on", "off", "status"):
+            state = sys.argv[2].lower()
+        if state == "status":
+            print_mesh_on_boot_status()
+            return
+        if state == "off":
+            apply_mesh_on_boot(False)
+        else:
+            apply_mesh_on_boot(True)
+
+    elif arg == "--mesh-off-boot":
+        apply_mesh_on_boot(False)
+
     elif arg == "--add-apps":
         sys.exit(add_apps())
 
@@ -1203,7 +1380,7 @@ def main():
             print("Use --help")
             sys.exit(1)
 
-        GpioController.set_gpio(GPIO_MAP[feature], state == "on")
+        GpioController.set_feature(feature, state == "on")
 
     else:
         print("Use --help")
