@@ -143,6 +143,21 @@ def format_mesh_on_boot_status(status):
 def print_mesh_on_boot_status():
     print(format_mesh_on_boot_status(get_mesh_on_boot_status()))
 
+def report_and_disable_mesh_autostart_if_default(context_label=None):
+    if context_label:
+        print(f"\n{context_label}")
+    else:
+        print("\nMeshtastic boot config status:")
+
+    print_mesh_on_boot_status()
+    meshtastic_disabled = disable_mesh_autostart_if_default(announce=False)
+    if meshtastic_disabled:
+        print("\nMeshtastic autostart disabled (LORA controls startup).")
+        print("Override: aiov2_ctl --mesh-on-boot")
+        print("Meshtastic boot config status:")
+        print_mesh_on_boot_status()
+    return meshtastic_disabled
+
 BANNER = """
    db    88  dP"Yb      Yb    dP oP"Yb.
   dPYb   88 dP   Yb      Yb  dP  "' dP'
@@ -452,17 +467,9 @@ def add_apps():
         "-y"
     ])
 
-    print("\nMeshtastic boot config status:")
-    print_mesh_on_boot_status()
-    meshtastic_disabled = disable_mesh_autostart_if_default(announce=False)
-
     print("\nInstallation complete.\n")
     print(POST_INSTALL_TIPS)
-    if meshtastic_disabled:
-        print("\nMeshtastic autostart disabled (LORA controls startup).")
-        print("Override: aiov2_ctl --mesh-on-boot")
-        print("Meshtastic boot config status:")
-        print_mesh_on_boot_status()
+    report_and_disable_mesh_autostart_if_default("Meshtastic boot config status:")
     return 0
 
 
@@ -1155,14 +1162,7 @@ def update_self():
 
     print("\nReinstalling updated version…\n")
 
-    print("Meshtastic boot config status:")
-    print_mesh_on_boot_status()
-    meshtastic_disabled = disable_mesh_autostart_if_default(announce=False)
-    if meshtastic_disabled:
-        print("Meshtastic autostart disabled (LORA controls startup).")
-        print("Override: aiov2_ctl --mesh-on-boot")
-        print("Meshtastic boot config status:")
-        print_mesh_on_boot_status()
+    report_and_disable_mesh_autostart_if_default("Meshtastic boot config status:")
 
     # escalate only for install
     rerun_with_sudo(["--install"])
