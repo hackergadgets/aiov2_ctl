@@ -611,15 +611,18 @@ class GpioController:
                     GpioController._run_service("stop")
                 disable_mesh_autostart_if_default(announce=False)
 
+   
+
+    # Pin States
     # 7 
-    # boot: no    pu | --
-    # on:   op dh pu | hi
-    # off:  op dl pu | lo
+    # boot (on): no    pu | --
+    # on:        op dh pu | hi
+    # off:       op dl pu | lo
 
     # 16, 23, 27
-    # boot: no    pd | --
-    # on:   op dh pd | hi
-    # off:  op dl pd | lo
+    # boot (off): no    pd | --
+    # on:         op dh pd | hi
+    # off:        op dl pd | lo
 
     @staticmethod
     def get_gpio(pin):
