@@ -614,7 +614,7 @@ class GpioController:
     @staticmethod
     def get_gpio(pin):
         out = GpioController.run(["pinctrl", "get", str(pin)])
-        return bool(out and "hi" in out)
+        return bool(out and ("hi" in out or "pu" in out))
 
 # ==============================
 # Telemetry
@@ -931,6 +931,7 @@ def run_gui():
     for f in GPIO_MAP:
         a = QAction(f)
         a.setCheckable(True)
+        cb.setChecked(GpioController.get_gpio(GPIO_MAP.get(f)))
         a.triggered.connect(
             lambda checked, f=f: GpioController.set_feature(f, checked)
         )
@@ -961,6 +962,7 @@ def run_gui():
     checkboxes = {}
     for f in GPIO_MAP:
         cb = QCheckBox(f)
+        cb.setChecked(GpioController.get_gpio(GPIO_MAP.get(f)))
         cb.toggled.connect(
             lambda checked, f=f: GpioController.set_feature(f, checked)
         )
