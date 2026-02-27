@@ -931,7 +931,7 @@ def run_gui():
     for f in GPIO_MAP:
         a = QAction(f)
         a.setCheckable(True)
-        cb.setChecked(GpioController.get_gpio(GPIO_MAP.get(f)))
+        a.setChecked(GpioController.get_gpio(GPIO_MAP.get(f)))
         a.triggered.connect(
             lambda checked, f=f: GpioController.set_feature(f, checked)
         )
