@@ -611,10 +611,20 @@ class GpioController:
                     GpioController._run_service("stop")
                 disable_mesh_autostart_if_default(announce=False)
 
+    # 7 
+    # boot: no    pu | --
+    # on:   op dh pu | hi
+    # off:  op dl pu | lo
+
+    # 16, 23, 27
+    # boot: no    pd | --
+    # on:   op dh pd | hi
+    # off:  op dl pd | lo
+
     @staticmethod
     def get_gpio(pin):
         out = GpioController.run(["pinctrl", "get", str(pin)])
-        return bool(out and ("hi" in out or "pu" in out))
+        return bool(out and ("hi" in out or "no    pu" in out))
 
 # ==============================
 # Telemetry
