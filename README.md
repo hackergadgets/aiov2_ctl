@@ -16,6 +16,12 @@ This tool controls onboard hardware (GPS, LoRa, SDR, USB power rails) via **dire
 - Provide a tray-based GUI for quick toggling
 - Optionally auto-start the GUI on login (XDG desktops)
 
+GPIO state reporting model:
+
+- Runtime state is **truth-first** from `pinctrl get` level parsing (`hi`/`lo`)
+- If level is `--` (not driven), state falls back to explicit per-pin boot defaults
+- No global GPIO inference heuristics are used
+
 ---
 
 ## Requirements
@@ -59,6 +65,11 @@ Sanity check:
 aiov2_ctl
 aiov2_ctl --status
 ```
+
+Install also enables the rail boot apply service:
+
+- `aiov2-rails-boot.service`
+- Applies configured rail boot states at startup
 
 ---
 
@@ -142,6 +153,30 @@ aiov2_ctl LORA off
 aiov2_ctl SDR on
 ```
 
+### Rail boot-state commands
+
+Configure per-feature rail state to apply at boot:
+
+```bash
+aiov2_ctl --boot-rail <FEATURE> on
+aiov2_ctl --boot-rail <FEATURE> off
+aiov2_ctl --boot-rail <FEATURE> status
+aiov2_ctl --boot-rails-status
+```
+
+Examples:
+
+```bash
+aiov2_ctl --boot-rail SDR on
+aiov2_ctl --boot-rail LORA off
+aiov2_ctl --boot-rails-status
+```
+
+Notes:
+
+- Boot rail settings are applied by `aiov2-rails-boot.service`
+- `--boot-rail ... on|off` may require sudo escalation depending on context
+
 ---
 
 ## 5) Power monitoring
@@ -172,8 +207,14 @@ aiov2_ctl --gui
 
 - **Left-click**: opens a small status window (Wayland-safe)
 - **Right-click**: opens tray menu to toggle hardware
+- **Right-click** also includes a **Rails on boot** submenu for per-feature boot preferences
 - Power usage is updated once per second
 - GUI must **not** be run as root
+
+GUI menu distinction:
+
+- Main feature toggles = **live rail state now**
+- `Rails on boot` toggles = **persisted boot preference**
 
 ---
 
@@ -221,6 +262,7 @@ Behaviour:
 - Git operations are **never** run as root
 - The tool escalates **only** for the install step
 - Clean exit if already up to date
+- Update path re-runs install, including boot rail service install/enable
 
 ---
 
@@ -230,5 +272,12 @@ Behaviour:
 - Assumes exclusive control of AIO v2 GPIO pins
 - Battery telemetry comes directly from kernel `power_supply`
 - Power deltas below **~0.05 W** are considered noise
+
+State source visibility:
+
+- Use `AIOV2_CTL_DEBUG=1 aiov2_ctl --status` to show source labels:
+  - `(pinctrl)` for direct `hi/lo`
+  - `(boot_default)` for `--` fallback
+  - `(unknown)` for unparseable/failed reads
 
 Maintained for **HackerGadgets uConsole AIO v2** users.
