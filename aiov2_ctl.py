@@ -11,6 +11,8 @@ from statistics import mean
 INSTALL_META_PATH = "/usr/local/share/aiov2_ctl/install.json"
 CONFIG_PATH = "/usr/local/share/aiov2_ctl/config.json"
 USER_CONFIG_PATH = os.path.expanduser("~/.config/aiov2_ctl/config.json")
+RAILS_BOOT_SERVICE = "aiov2-rails-boot.service"
+RAILS_BOOT_SERVICE_PATH = f"/etc/systemd/system/{RAILS_BOOT_SERVICE}"
 
 def rerun_with_sudo(extra_args=None):
     python3 = shutil.which("python3") or "/usr/bin/python3"
@@ -82,6 +84,14 @@ def load_config():
             continue
     return config
 
+
+def load_system_config():
+    try:
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
 def save_config(config):
     try:
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
@@ -94,6 +104,57 @@ def save_config(config):
     os.makedirs(os.path.dirname(USER_CONFIG_PATH), exist_ok=True)
     with open(USER_CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)
+
+
+def _rails_on_boot_from_config(config):
+    rails = {feature: False for feature in GPIO_MAP}
+    raw = config.get("rails_on_boot")
+    if isinstance(raw, dict):
+        for feature in rails:
+            if feature in raw:
+                rails[feature] = bool(raw[feature])
+    return rails
+
+
+def get_rails_on_boot_config(system_only=False):
+    if system_only:
+        return _rails_on_boot_from_config(load_system_config())
+    return _rails_on_boot_from_config(load_config())
+
+
+def set_feature_on_boot(feature, enabled):
+    feature = feature.upper()
+    if feature not in GPIO_MAP:
+        return False
+
+    config = load_config()
+    rails = _rails_on_boot_from_config(config)
+    rails[feature] = bool(enabled)
+    config["rails_on_boot"] = rails
+    save_config(config)
+    return True
+
+
+def print_rails_on_boot_status():
+    rails = get_rails_on_boot_config(system_only=True)
+    print("GPIO rails on boot:")
+    for feature in GPIO_MAP:
+        state = "ON" if rails.get(feature, False) else "OFF"
+        print(f"  {feature:<5}: {state}")
+
+
+def apply_rails_on_boot(announce=False):
+    rails = get_rails_on_boot_config(system_only=True)
+    if announce:
+        print("Applying GPIO rail boot states...")
+
+    for feature in GPIO_MAP:
+        desired = bool(rails.get(feature, False))
+        GpioController.set_feature(feature, desired)
+        if announce:
+            print(f"  {feature:<5} -> {'ON' if desired else 'OFF'}")
+
+    return 0
 
 def apply_mesh_on_boot(enabled, update_config=True, announce=True):
     if update_config:
@@ -202,6 +263,8 @@ _aiov2_ctl()
         --no-autostart
         --mesh-on-boot
         --mesh-off-boot
+        --boot-rail
+        --boot-rails-status
         --add-apps
         --remove-apps
         --sync-rtc
@@ -214,8 +277,18 @@ _aiov2_ctl()
         return 0
     fi
 
-    if [[ "${prev}" =~ ^(GPS|LORA|SDR|USB)$ ]]; then
+    if [[ "${prev}" =~ ^(GPS|LORA|SDR|USB)$ ]] && [[ "${COMP_WORDS[1]}" != "--boot-rail" ]]; then
         COMPREPLY=( $(compgen -W "on off" -- "${cur}") )
+        return 0
+    fi
+
+    if [[ "${prev}" == "--boot-rail" ]]; then
+        COMPREPLY=( $(compgen -W "${features}" -- "${cur}") )
+        return 0
+    fi
+
+    if [[ ${COMP_CWORD} -eq 3 ]] && [[ "${COMP_WORDS[1]}" == "--boot-rail" ]]; then
+        COMPREPLY=( $(compgen -W "on off status" -- "${cur}") )
         return 0
     fi
 
@@ -362,6 +435,8 @@ USAGE:
   aiov2_ctl --autostart
   aiov2_ctl --no-autostart
     aiov2_ctl --mesh-on-boot [on|off|status]
+    aiov2_ctl --boot-rail <FEATURE> on|off|status
+    aiov2_ctl --boot-rails-status
   sudo aiov2_ctl --add-apps
   sudo aiov2_ctl --remove-apps
   sudo aiov2_ctl --sync-rtc
@@ -382,6 +457,8 @@ COMMANDS:
   --no-autostart     Disable GUI autostart
         --mesh-on-boot     Enable meshtasticd autostart (or status)
         --mesh-off-boot    Disable meshtasticd autostart (default)
+      --boot-rail      Set per-rail GPIO state to apply on boot
+      --boot-rails-status   Show configured per-rail boot states
   --add-apps   Install HackerGadgets AIO apps
   --sync-rtc   Write current system time to hardware RTC
   --remove-apps   Remove HackerGadgets AIO apps
@@ -421,6 +498,19 @@ Icon=utilities-system-monitor
 Terminal=false
 Categories=System;Utility;
 StartupNotify=false
+"""
+
+RAILS_BOOT_SERVICE_UNIT = """[Unit]
+Description=AIO v2 apply GPIO rail boot states
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/bin/aiov2_ctl --apply-boot-rails
+
+[Install]
+WantedBy=multi-user.target
 """
 
 
@@ -990,6 +1080,35 @@ def run_gui():
         actions[f] = a
 
     menu.addSeparator()
+    boot_menu = QMenu("Rails on boot")
+    boot_actions = {}
+
+    for f in GPIO_MAP:
+        a = QAction(f)
+        a.setCheckable(True)
+        def on_boot_toggled(checked, f=f):
+            state = "on" if checked else "off"
+            rc = subprocess.call(
+                ["sudo", "-n", "/usr/local/bin/aiov2_ctl", "--boot-rail", f, state],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if rc != 0:
+                tray.showMessage(
+                    "AIOv2 Boot Rails",
+                    "Boot rail changes require sudo in terminal.",
+                    QSystemTrayIcon.MessageIcon.Warning,
+                    5000,
+                )
+            refresh()
+
+        a.triggered.connect(on_boot_toggled)
+        boot_menu.addAction(a)
+        boot_actions[f] = a
+
+    menu.addMenu(boot_menu)
+
+    menu.addSeparator()
     power_action = QAction("Power: -- W")
     power_action.setEnabled(False)
     menu.addAction(power_action)
@@ -1021,6 +1140,7 @@ def run_gui():
 
     def refresh():
         summary = Telemetry.power_summary()
+        rails_on_boot = get_rails_on_boot_config(system_only=True)
         if summary:
             power_label.setText(
                 f"{summary['mode']} | {summary['power']} W | {summary['capacity']}%"
@@ -1040,6 +1160,10 @@ def run_gui():
             actions[f].blockSignals(True)
             actions[f].setChecked(state)
             actions[f].blockSignals(False)
+
+            boot_actions[f].blockSignals(True)
+            boot_actions[f].setChecked(bool(rails_on_boot.get(f, False)))
+            boot_actions[f].blockSignals(False)
 
     def on_activate(reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -1182,6 +1306,16 @@ def install_self():
     with open(desktop_path, "w") as f:
         f.write(SYSTEM_DESKTOP_ENTRY)
     os.chmod(desktop_path, 0o644)
+
+    # ------------------------------
+    # Install boot rail systemd unit
+    # ------------------------------
+    print(f"Installing rail boot service → {RAILS_BOOT_SERVICE_PATH}\n")
+    with open(RAILS_BOOT_SERVICE_PATH, "w") as f:
+        f.write(RAILS_BOOT_SERVICE_UNIT)
+    os.chmod(RAILS_BOOT_SERVICE_PATH, 0o644)
+    subprocess.call(["systemctl", "daemon-reload"])
+    subprocess.call(["systemctl", "enable", RAILS_BOOT_SERVICE])
 
     os.makedirs(os.path.dirname(INSTALL_META_PATH), exist_ok=True)
     with open(INSTALL_META_PATH, "w") as f:
@@ -1386,6 +1520,33 @@ def main():
 
     elif arg == "--mesh-off-boot":
         apply_mesh_on_boot(False)
+
+    elif arg == "--boot-rail":
+        if len(sys.argv) < 4:
+            print("Usage: aiov2_ctl --boot-rail <FEATURE> on|off|status")
+            sys.exit(1)
+
+        feature = sys.argv[2].upper()
+        state = sys.argv[3].lower()
+
+        if feature not in GPIO_MAP or state not in ("on", "off", "status"):
+            print("Usage: aiov2_ctl --boot-rail <FEATURE> on|off|status")
+            sys.exit(1)
+
+        if state == "status":
+            rails = get_rails_on_boot_config(system_only=True)
+            print(f"{feature} boot state: {'ON' if rails.get(feature, False) else 'OFF'}")
+        else:
+            if os.geteuid() != 0:
+                rerun_with_sudo(["--boot-rail", feature, state])
+            set_feature_on_boot(feature, state == "on")
+            print(f"{feature} boot state set to {'ON' if state == 'on' else 'OFF'}")
+
+    elif arg == "--boot-rails-status":
+        print_rails_on_boot_status()
+
+    elif arg == "--apply-boot-rails":
+        sys.exit(apply_rails_on_boot())
 
     elif arg == "--add-apps":
         sys.exit(add_apps())
