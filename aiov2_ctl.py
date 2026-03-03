@@ -13,6 +13,7 @@ CONFIG_PATH = "/usr/local/share/aiov2_ctl/config.json"
 USER_CONFIG_PATH = os.path.expanduser("~/.config/aiov2_ctl/config.json")
 RAILS_BOOT_SERVICE = "aiov2-rails-boot.service"
 RAILS_BOOT_SERVICE_PATH = f"/etc/systemd/system/{RAILS_BOOT_SERVICE}"
+FIRMWARE_CONFIG_PATH = "/boot/firmware/config.txt"  # Pi 5 / Bookworm path
 
 def rerun_with_sudo(extra_args=None):
     python3 = shutil.which("python3") or "/usr/bin/python3"
@@ -132,7 +133,87 @@ def set_feature_on_boot(feature, enabled):
     rails[feature] = bool(enabled)
     config["rails_on_boot"] = rails
     save_config(config)
+
+    # Sync firmware config.txt for instant boot state
+    sync_firmware_gpio_config(rails)
     return True
+
+
+def get_firmware_config_path():
+    """Return the path to config.txt (varies by Pi OS version)."""
+    if os.path.exists(FIRMWARE_CONFIG_PATH):
+        return FIRMWARE_CONFIG_PATH
+    # Fallback for older Pi OS / Bullseye
+    if os.path.exists("/boot/config.txt"):
+        return "/boot/config.txt"
+    return None
+
+
+def sync_firmware_gpio_config(rails=None):
+    """
+    Sync /boot/firmware/config.txt with rails_on_boot config.
+
+    This sets GPIO states at firmware level before Linux boots,
+    preventing brief glitches from floating pins (e.g., SDR turning on
+    due to internal pullup before systemd service runs).
+    """
+    config_path = get_firmware_config_path()
+    if not config_path:
+        return False
+
+    if rails is None:
+        rails = get_rails_on_boot_config(system_only=True)
+
+    # Build the gpio lines we want
+    # Format: gpio=<pin>=op,dl (output, drive low) or gpio=<pin>=op,dh (output, drive high)
+    managed_pins = set(GPIO_MAP.values())
+    new_lines = []
+    for feature, pin in GPIO_MAP.items():
+        # dh = drive high (ON), dl = drive low (OFF)
+        drive = "dh" if rails.get(feature, False) else "dl"
+        new_lines.append(f"gpio={pin}=op,{drive}")
+
+    try:
+        with open(config_path, "r") as f:
+            content = f.read()
+    except Exception:
+        return False
+
+    marker = "# aiov2_ctl GPIO early boot config"
+
+    # Remove existing gpio=<pin>= lines for our managed pins AND our marker
+    lines = content.splitlines()
+    filtered = []
+    for line in lines:
+        # Skip our marker line
+        if line.strip() == marker:
+            continue
+        # Match gpio=<pin>=... for any of our managed pins
+        match = re.match(r'^\s*gpio=(\d+)=', line)
+        if match:
+            pin = int(match.group(1))
+            if pin in managed_pins:
+                continue  # Skip - we'll add our own
+        filtered.append(line)
+
+    # Remove trailing empty lines
+    while filtered and filtered[-1].strip() == "":
+        filtered.pop()
+
+    # Add our marker and gpio lines
+    filtered.append("")
+    filtered.append(marker)
+    filtered.extend(new_lines)
+    filtered.append("")  # trailing newline
+
+    new_content = "\n".join(filtered)
+
+    try:
+        with open(config_path, "w") as f:
+            f.write(new_content)
+        return True
+    except Exception:
+        return False
 
 
 def print_rails_on_boot_status():
@@ -1316,6 +1397,17 @@ def install_self():
     os.chmod(RAILS_BOOT_SERVICE_PATH, 0o644)
     subprocess.call(["systemctl", "daemon-reload"])
     subprocess.call(["systemctl", "enable", RAILS_BOOT_SERVICE])
+
+    # ------------------------------
+    # Sync firmware GPIO config
+    # ------------------------------
+    fw_path = get_firmware_config_path()
+    if fw_path:
+        print(f"Syncing GPIO early boot config → {fw_path}\n")
+        if sync_firmware_gpio_config():
+            print("GPIO states will be set at firmware level before Linux boots.\n")
+        else:
+            print("Could not sync firmware GPIO config (non-fatal).\n")
 
     os.makedirs(os.path.dirname(INSTALL_META_PATH), exist_ok=True)
     with open(INSTALL_META_PATH, "w") as f:
