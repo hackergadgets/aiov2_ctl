@@ -1348,11 +1348,11 @@ def update_self():
         print("Reinstall required.")
         return 1
 
-    branch = meta.get("branch") or get_git_branch(repo) or "unknown"
+    branch = meta.get("branch") or get_git_branch(repo) or "main"
     print(f"Current branch: {branch}\n")
     print("Pulling latest changes…\n")
 
-    if not run_cmd(["git", "pull", "--ff-only"], cwd=repo):
+    if not run_cmd(["git", "pull", "--ff-only", "origin", branch], cwd=repo):
         print("Git pull failed. Resolve manually.")
         return 1
 
