@@ -5,6 +5,7 @@ import subprocess
 import time
 import json
 import shutil
+import re
 from statistics import mean
 
 INSTALL_META_PATH = "/usr/local/share/aiov2_ctl/install.json"
@@ -260,6 +261,15 @@ GPIO_MAP = {
     "LORA": 16,
     "SDR": 7,
     "USB": 23,
+}
+
+# If pinctrl reports level "--" (not driven), fall back to a boot default.
+# Keep this per-pin; do NOT infer state using "no pu" globally.
+BOOT_DEFAULTS = {
+    7: True,
+    16: False,
+    23: False,
+    27: False,
 }
 
 FEATURE_META = {
@@ -530,6 +540,24 @@ def sync_rtc():
     return 0
 
 
+def parse_pinctrl_level(out: str):
+    """
+    Extract pin level from `pinctrl get <pin>` output.
+    Returns: "hi", "lo", "--", or None.
+    """
+    if not out:
+        return None
+
+    if re.search(r"\bhi\b", out):
+        return "hi"
+    if re.search(r"\blo\b", out):
+        return "lo"
+    if re.search(r"(?<!\S)--(?!\S)", out):
+        return "--"
+
+    return None
+
+
 # ==============================
 # GPIO Helpers
 # ==============================
@@ -613,8 +641,26 @@ class GpioController:
 
     @staticmethod
     def get_gpio(pin):
+        state, _ = GpioController.get_pin_state(pin)
+        return state
+
+    @staticmethod
+    def get_pin_state(pin):
         out = GpioController.run(["pinctrl", "get", str(pin)])
-        return bool(out and "hi" in out)
+        level = parse_pinctrl_level(out)
+
+        # Truth-first
+        if level == "hi":
+            return True, "pinctrl"
+        if level == "lo":
+            return False, "pinctrl"
+
+        # Only not-driven pins use explicit per-pin boot defaults
+        if level == "--":
+            return bool(BOOT_DEFAULTS.get(pin, False)), "boot_default"
+
+        # Unparseable / command-failure path
+        return False, "unknown"
 
 # ==============================
 # Telemetry
@@ -715,9 +761,15 @@ def show_status():
     print("AIO v2 Status")
     print("====================")
 
+    debug = os.environ.get("AIOV2_CTL_DEBUG") == "1"
+
     for f, p in GPIO_MAP.items():
-        state = "ON" if GpioController.get_gpio(p) else "OFF"
-        print(f"{f:<5} GPIO{p}: {state}")
+        state_bool, source = GpioController.get_pin_state(p)
+        state = "ON" if state_bool else "OFF"
+        if debug:
+            print(f"{f:<5} GPIO{p}: {state} ({source})")
+        else:
+            print(f"{f:<5} GPIO{p}: {state}")
 
     print("--------------------")
 
