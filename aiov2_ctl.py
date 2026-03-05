@@ -6,6 +6,7 @@ import time
 import json
 import shutil
 import re
+import locale
 from statistics import mean
 
 INSTALL_META_PATH = "/usr/local/share/aiov2_ctl/install.json"
@@ -38,6 +39,59 @@ def has_desktop_session():
         os.environ.get(v)
         for v in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE")
     )
+
+
+def ensure_utf8_locale():
+    """
+    Ensure this process has a UTF-8 locale before starting Qt.
+    Some systems are configured with LANG like "en_GB" (without UTF-8),
+    which can make Qt/PyQt GUI startup unreliable.
+    """
+    def _is_utf8(value):
+        if not value:
+            return False
+        upper = value.upper()
+        return "UTF-8" in upper or "UTF8" in upper
+
+    configured = (
+        os.environ.get("LC_ALL")
+        or os.environ.get("LC_CTYPE")
+        or os.environ.get("LANG")
+        or ""
+    )
+
+    # Locale is already UTF-8; just make sure Python applies it.
+    if _is_utf8(configured):
+        try:
+            locale.setlocale(locale.LC_CTYPE, "")
+            return True
+        except Exception:
+            pass
+
+    base = configured.split(".", 1)[0].split("@", 1)[0] if configured else ""
+    candidates = []
+    if base:
+        candidates.append(f"{base}.UTF-8")
+        candidates.append(f"{base}.utf8")
+    candidates.extend(["C.UTF-8", "en_GB.UTF-8", "en_US.UTF-8"])
+
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            locale.setlocale(locale.LC_CTYPE, candidate)
+            os.environ["LC_CTYPE"] = candidate
+            if not _is_utf8(os.environ.get("LANG", "")):
+                os.environ["LANG"] = candidate
+            if "LC_ALL" in os.environ and not _is_utf8(os.environ["LC_ALL"]):
+                del os.environ["LC_ALL"]
+            return True
+        except Exception:
+            continue
+
+    return False
 
 def run_cmd(cmd, cwd=None):
     try:
@@ -1093,6 +1147,9 @@ def run_gui():
         print("No graphical session detected.")
         print("Run the GUI from the device desktop or enable autostart.")
         sys.exit(1)
+
+    if not ensure_utf8_locale():
+        print("Warning: no UTF-8 locale available; GUI launch may fail.")
 
     try:
         from PyQt6.QtWidgets import (
